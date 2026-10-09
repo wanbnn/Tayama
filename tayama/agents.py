@@ -1,0 +1,62 @@
+"""Agentes persistidos por workspace em ~/.tayama/agents/<workspace_id>.json."""
+import json
+from . import config
+
+
+def _dir():
+    config.ensure()
+    d = config.DIR / "agents"; d.mkdir(exist_ok=True); return d
+
+
+def _file(workspace_id):
+    return _dir() / f"{workspace_id}.json"
+
+
+def _read(workspace_id):
+    try: return json.loads(_file(workspace_id).read_text("utf-8"))
+    except (OSError, ValueError): return []
+
+
+def _write(workspace_id, entries):
+    f = _file(workspace_id)
+    if not entries:
+        if f.exists(): f.unlink()        # arquivo vazio some
+        return
+    f.write_text(json.dumps(entries, indent=2, ensure_ascii=False), "utf-8")
+
+
+def load_all():
+    """Todos os agentes de todos os workspaces (para restauração no startup)."""
+    out = []
+    for f in sorted(_dir().glob("*.json")):
+        try: out += json.loads(f.read_text("utf-8"))
+        except (OSError, ValueError): continue
+    return out
+
+
+def save_one(win):
+    """Atualiza (ou insere) a entrada de um FloatingWindow no arquivo do seu workspace."""
+    ws_id = win.workspace["id"]
+    spec = {
+        "id": win.id, "name": win.name,
+        "agent_name": win.agent["name"],
+        "role_name": win.role["name"] if win.role else None,
+        "workspace_id": ws_id,
+        "skills": [s["name"] for s in win.skills],
+        "x": win.proxy.pos().x(), "y": win.proxy.pos().y(),
+        "w": win.size().width(), "h": win.size().height(),
+    }
+    entries = _read(ws_id)
+    for i, e in enumerate(entries):
+        if e["id"] == win.id: entries[i] = spec; break
+    else: entries.append(spec)
+    _write(ws_id, entries)
+
+
+def remove_one(win_id, ws_id):
+    _write(ws_id, [e for e in _read(ws_id) if e["id"] != win_id])
+
+
+def remove_workspace(ws_id):
+    f = _file(ws_id)
+    if f.exists(): f.unlink()

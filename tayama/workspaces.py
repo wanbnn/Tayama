@@ -20,4 +20,7 @@ def add(name, path):
     save(load() + [w]); return w
 
 
-def remove(wid): save([w for w in load() if w["id"] != wid])
+def remove(wid):
+    save([w for w in load() if w["id"] != wid])
+    from . import agents
+    agents.remove_workspace(wid)
