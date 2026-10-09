@@ -2,6 +2,9 @@ import sys, subprocess
 from PyQt6.QtWidgets import QApplication, QMainWindow, QToolBar, QInputDialog, QMessageBox, QWidget, QHBoxLayout, QToolButton, QSizePolicy
 from PyQt6.QtCore import QSize, Qt, QPropertyAnimation, QEasingCurve
 from PyQt6.QtGui import QAction
+# O QtWebEngine exige que QtWebEngineWidgets seja importado ANTES do QApplication.
+# Este import também puxa tayama/browser.py, garantindo isso.
+import tayama.browser  # noqa: F401
 from tayama import config, workspaces
 from tayama.sidebar import Sidebar
 from tayama.icons import icon
@@ -50,6 +53,7 @@ class MainWindow(QMainWindow):
         self._open = True
         self._rail_icon()
         self.bridge = Bridge(self.canvas)
+        self.canvas.restore_agents()
 
         tb = QToolBar("Workspace")
         tb.setObjectName("mainToolbar")
@@ -61,6 +65,7 @@ class MainWindow(QMainWindow):
 
         actions = (
             ("plus", "Novo agente", lambda: self.new_agent()),
+            ("earth", "Painel web", self.new_panel),
             ("bullhorn-outline", "Enviar a todos", self.broadcast),
             ("dock-right", "Workspaces", self.toggle_sidebar),
             ("cog-outline", "Agentes, cargos e skills", self.edit_cfg),
@@ -108,6 +113,9 @@ class MainWindow(QMainWindow):
         d = NewTerminalDialog(config.load(), wss, ws["id"] if isinstance(ws, dict) else None, self)
         if d.exec():
             self.canvas.add_terminal(d.spec())
+
+    def new_panel(self):
+        self.canvas.add_panel("about:blank")
 
     def broadcast(self):
         text, ok = QInputDialog.getMultiLineText(self, "Enviar a todos", "Mensagem para todos os terminais:")

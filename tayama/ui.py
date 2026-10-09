@@ -6,7 +6,7 @@ from PyQt6.QtWidgets import (
     QGraphicsView, QGraphicsScene, QGraphicsPathItem, QFrame, QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QPushButton, QMenu, QDialog, QFormLayout, QLineEdit, QComboBox, QListWidget,
     QListWidgetItem, QDialogButtonBox, QFileDialog, QPlainTextEdit, QMessageBox)
-from . import config, trust
+from . import agents, config, trust, workspaces
 from .icons import icon, style_button
 from .terminal import PtyTerminal
 
@@ -29,13 +29,16 @@ class ResizeGrip(QLabel):
                            max(self.target.minimumHeight(), self._s.height() + d.y()))
         self.target.update_status(); e.accept()
 
-    def mouseReleaseEvent(self, e): self._p = None; e.accept()
+    def mouseReleaseEvent(self, e):
+        self._p = None
+        if self.target.proxy: self.target.canvas._persist_window(self.target)
+        e.accept()
 
 
 class FloatingWindow(QFrame):
     def __init__(self, canvas, spec):
         super().__init__()
-        self.canvas, self.id = canvas, uuid.uuid4().hex[:8]
+        self.canvas, self.id = canvas, spec.get("id") or uuid.uuid4().hex[:8]
         self.name, self.agent = spec["name"], spec["agent"]
         self.role, self.skills = spec.get("role"), spec.get("skills", [])
         self.workspace = spec.get("workspace") or {}
@@ -105,7 +108,10 @@ class FloatingWindow(QFrame):
             d = e.globalPosition().toPoint() - self._drag
             self.proxy.setPos(self._start + QPointF(d.x(), d.y())); e.accept()
 
-    def _tr(self, e): self._drag = None; e.accept()
+    def _tr(self, e):
+        self._drag = None
+        if self.proxy: self.canvas._persist_window(self)
+        e.accept()
 
     # --- comunicação ---------------------------------------------------
     def briefing(self) -> str:
@@ -164,7 +170,7 @@ class InfiniteCanvas(QGraphicsView):
         self.setRenderHint(QPainter.RenderHint.Antialiasing)
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self.windows, self.edges = {}, []
+        self.windows, self.edges, self.panels = {}, [], {}
         self._link_src = None; self._panning = False; self._space = False; self._n = 0
         t = QTimer(self, interval=33); t.timeout.connect(lambda: [e.refresh() for e in self.edges]); t.start()
 
@@ -175,14 +181,21 @@ class InfiniteCanvas(QGraphicsView):
             for y in range(int(rect.top()) - int(rect.top()) % g, int(rect.bottom()), g): p.drawPoint(x, y)
 
     # --- terminais e conexões -----------------------------------------
-    def add_terminal(self, spec):
+    def add_terminal(self, spec, _persist=True):
         win = FloatingWindow(self, spec); proxy = self.gscene.addWidget(win); win.proxy = proxy
-        c = self.mapToScene(self.viewport().rect().center()); off = 30 * (self._n % 8); self._n += 1
-        proxy.setPos(c.x() - win.width() / 2 + off, c.y() - win.height() / 2 + off)
-        self.windows[win.id] = win; self.changed.emit(); return win
+        pos = spec.pop("_restored_pos", None); size = spec.pop("_restored_size", None)
+        if pos and size:
+            proxy.setPos(*pos); win.resize(*size)
+        else:
+            c = self.mapToScene(self.viewport().rect().center()); off = 30 * (self._n % 8); self._n += 1
+            proxy.setPos(c.x() - win.width() / 2 + off, c.y() - win.height() / 2 + off)
+        self.windows[win.id] = win
+        if _persist: agents.save_one(win)
+        self.changed.emit(); return win
 
     def remove_window(self, win):
         for e in [e for e in self.edges if win in (e.src, e.dst)]: self.remove_edge(e)
+        agents.remove_one(win.id, win.workspace["id"])
         self.windows.pop(win.id, None)
         if win.proxy and win.proxy.scene(): self.gscene.removeItem(win.proxy)
         self.changed.emit()
@@ -201,6 +214,53 @@ class InfiniteCanvas(QGraphicsView):
     def remove_edge(self, e):
         if e in self.edges: self.edges.remove(e)
         self.gscene.removeItem(e)
+
+    # --- painéis web ----------------------------------------------------
+    # Import tardio: tayama.browser importa daqui (BTN/ResizeGrip) e o QtWebEngine
+    # precisa ser carregado antes do QApplication.
+    def add_panel(self, url="about:blank"):
+        from .browser import BrowserWindow
+        win = BrowserWindow(self, url)
+        proxy = self.gscene.addWidget(win); win.proxy = proxy
+        c = self.mapToScene(self.viewport().rect().center())
+        off = 30 * (self._n % 8); self._n += 1
+        proxy.setPos(c.x() - win.width() / 2 + off, c.y() - win.height() / 2 + off)
+        self.panels[win.id] = win
+        self.changed.emit(); return win
+
+    def remove_panel(self, win):
+        for e in [e for e in self.edges if win in (e.src, e.dst)]: self.remove_edge(e)
+        self.panels.pop(win.id, None)
+        if win.proxy and win.proxy.scene(): self.gscene.removeItem(win.proxy)
+        self.changed.emit()
+
+    # --- persistência --------------------------------------------------
+    def _persist_window(self, win):
+        # painéis não são terminais: não têm workspace e não vão para o disco
+        if getattr(win, "workspace", None): agents.save_one(win)
+
+    def restore_agents(self):
+        cfg = config.load()
+        wss = {w["id"]: w for w in workspaces.load()}
+        self.blockSignals(True)
+        try:
+            for e in agents.load_all():
+                agent = next((a for a in cfg["agents"] if a["name"] == e["agent_name"]), None)
+                if not agent:
+                    print(f"Tayama: agente '{e['name']}' ignorado — '{e['agent_name']}' não está mais em config"); continue
+                role = next((r for r in cfg["roles"] if r["name"] == e["role_name"]), None) if e.get("role_name") else None
+                ws = wss.get(e["workspace_id"])
+                if not ws:
+                    print(f"Tayama: agente '{e['name']}' ignorado — workspace removido"); continue
+                skills = [s for s in cfg["skills"] if s["name"] in e.get("skills", [])]
+                self.add_terminal({
+                    "id": e["id"], "name": e["name"], "agent": agent, "role": role, "workspace": ws,
+                    "cwd": ws["path"], "skills": skills,
+                    "_restored_pos": (e["x"], e["y"]), "_restored_size": (e["w"], e["h"]),
+                }, _persist=False)
+        finally:
+            self.blockSignals(False)
+            self.changed.emit()
 
     # --- navegação -----------------------------------------------------
     def keyPressEvent(self, e):

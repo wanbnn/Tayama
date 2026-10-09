@@ -1,3 +1,4 @@
 PyQt6>=6.5
+PyQt6-WebEngine>=6.11.0
 pyte>=0.8.2
 qtawesome>=1.3

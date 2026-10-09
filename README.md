@@ -4,7 +4,12 @@ Canvas infinito para orquestrar agentes CLI (Claude Code, Codex CLI, OpenCode CL
 em terminais PTY reais, com **cargos**, **skills** e **conexões** entre terminais.
 
 ## Executar (Linux/macOS; no Windows use WSL)
-    ./run.sh          # cria .venv, instala PyQt6 + pyte e abre o app
+    ./run.sh          # cria .venv, instala PyQt6 + PyQt6-WebEngine + pyte e abre o app
+
+> **Linux:** o painel web usa Chromium embarcado (QtWebEngine). Em sistemas sem user namespaces
+> configurados ( containers, WSL antigo, kernels com `kernel.unprivileged_userns_clone=0`), o
+> Chromium falha ao iniciar com *"Failed to move to new namespace"*. Rode com o sandbox desligado:
+> `QTWEBENGINE_DISABLE_SANDBOX=1 ./run.sh`
 
 ## Como usar
 1. Abra a sidebar à direita (Ctrl+B) e crie um **workspace** (nome + diretório de trabalho). Depois use **Novo agente**: a pasta vem do workspace escolhido.

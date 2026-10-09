@@ -32,11 +32,37 @@ DEFAULT = {
 }
 
 
+def _write_private(path: Path, text: str, mode: int = 0o600):
+    """Escreve arquivo com permissão restrita.
+
+    write_text() respeita o umask e NÃO corrige permissão de arquivo já existente,
+    então passamos por os.open(..., O_CREAT|O_WRONLY, mode) e um chmod final.
+    """
+    fd = os.open(path, os.O_CREAT | os.O_WRONLY | os.O_TRUNC, mode)
+    try:
+        os.write(fd, text.encode("utf-8"))
+    finally:
+        os.close(fd)
+    try:
+        os.chmod(path, mode)
+    except OSError:
+        pass
+
+
 def ensure():
     DIR.mkdir(parents=True, exist_ok=True)
     SKILLS.mkdir(exist_ok=True)
+    try:
+        os.chmod(DIR, 0o700)          # ~/.tayama só para o usuário
+    except OSError:
+        pass
     if not CFG.exists():
-        CFG.write_text(json.dumps(DEFAULT, indent=2, ensure_ascii=False), "utf-8")
+        _write_private(CFG, json.dumps(DEFAULT, indent=2, ensure_ascii=False))
+    else:
+        try:
+            os.chmod(CFG, 0o600)
+        except OSError:
+            pass
     try:
         os.chmod(Path(BIN) / "tayama", 0o755)
     except OSError:
@@ -50,7 +76,7 @@ def raw() -> str:
 
 def save_raw(text: str):
     json.loads(text)  # valida
-    CFG.write_text(text, "utf-8")
+    _write_private(CFG, text)
 
 
 def load() -> dict:
