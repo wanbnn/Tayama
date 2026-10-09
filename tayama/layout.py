@@ -98,15 +98,25 @@ def load_panels(ws_id):
     return _read(PANELS, ws_id)
 
 
+def _all(kind):
+    """[(ws_id, item), ...] de todos os workspaces, lendo por _read().
+
+    Delegar a _read() é o ponto: ela já normaliza JSON corrompido, de outro tipo
+    e id invalido para []. Reparsear aqui criaria um segundo caminho com outras
+    regras — foi assim que um '42' num panels/<ws>.json passou a derrubar o
+    startup (restore_panels chama isto na abertura).
+    """
+    config.ensure()
+    d = config.DIR / kind
+    if not d.is_dir(): return []
+    return [(f.stem, item) for f in sorted(d.glob("*.json"))
+            for item in _read(kind, f.stem)]
+
+
 def load_all_panels():
     """[(ws_id, spec), ...] de todos os workspaces (para restauração no startup)."""
-    config.ensure()
-    d = config.DIR / PANELS
-    out = []
-    for f in sorted(d.glob("*.json")):
-        try: out += [(f.stem, spec) for spec in json.loads(f.read_text("utf-8"))]
-        except (OSError, ValueError): continue
-    return out
+    # item precisa ser dict: restore_panels chama spec.get() e spec["x"] nele.
+    return [(ws, spec) for ws, spec in _all(PANELS) if isinstance(spec, dict)]
 
 
 # --- conexões --------------------------------------------------------------
@@ -115,20 +125,18 @@ def save_links(ws_id, pairs):
     _write(LINKS, ws_id, [[a, b] for a, b in pairs])
 
 
+def _is_pair(item):
+    """Um par de conexao: lista/tupla de exatamente 2 itens."""
+    return isinstance(item, (list, tuple)) and len(item) == 2
+
+
 def load_links(ws_id):
-    return [tuple(p) for p in _read(LINKS, ws_id) if isinstance(p, (list, tuple)) and len(p) == 2]
+    return [tuple(p) for p in _read(LINKS, ws_id) if _is_pair(p)]
 
 
 def load_all_links():
     """[(ws_id, (src_id, dst_id)), ...] de todos os workspaces."""
-    config.ensure()
-    d = config.DIR / LINKS
-    out = []
-    for f in sorted(d.glob("*.json")):
-        try: out += [(f.stem, tuple(p)) for p in json.loads(f.read_text("utf-8"))
-                     if isinstance(p, (list, tuple)) and len(p) == 2]
-        except (OSError, ValueError): continue
-    return out
+    return [(ws, tuple(item)) for ws, item in _all(LINKS) if _is_pair(item)]
 
 
 def remove_workspace(ws_id):

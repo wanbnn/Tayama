@@ -29,13 +29,15 @@ def _write(workspace_id, entries):
 
 
 def load_all():
-    """Todos os agentes de todos os workspaces (para restauração no startup)."""
-    out = []
-    for f in sorted(_dir().glob("*.json")):
-        try: data = json.loads(f.read_text("utf-8"))
-        except (OSError, ValueError): continue
-        if isinstance(data, list): out += data
-    return out
+    """Todos os agentes de todos os workspaces (para restauração no startup).
+
+    Lê por _read() (que normaliza JSON corrompido/de outro tipo para []) e
+    descarta entradas que não são dict — restore_agents indexa campos da spec
+    direto, e um item solto derrubaria a abertura do app.
+    """
+    d = _dir()
+    return [e for f in sorted(d.glob("*.json")) for e in _read(f.stem)
+            if isinstance(e, dict)]
 
 
 def save_one(win):
