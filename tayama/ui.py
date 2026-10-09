@@ -114,6 +114,16 @@ class FloatingWindow(QFrame):
         if self.proxy: self.canvas._persist_window(self)
         e.accept()
 
+    def refresh_agent_label(self):
+        """Reescreve 'agente · workspace' — chamado ao abrir e ao renomear o workspace.
+
+        O label é montado em __init__ com o nome do workspace da época; editar
+        o workspace troca win.workspace ao vivo, então o texto precisa ser
+        refeito aqui (MainWindow.edit_workspace chama este método).
+        """
+        ws = getattr(self, "workspace", None)
+        self.agent_label.setText(self.agent["name"] + (f"  ·  {ws['name']}" if ws else ""))
+
     # --- comunicação ---------------------------------------------------
     def briefing(self) -> str:
         peers = self.canvas.peers_of(self)
@@ -376,11 +386,6 @@ class WorkspaceDialog(QDialog):
         f.addRow("Nome", self.name); f.addRow("Diretório", row)
         bb = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
         bb.accepted.connect(self._ok); bb.rejected.connect(self.reject); f.addRow(bb)
-
-    def refresh_agent_label(self):
-        """Reescreve 'agente · workspace' — chamado ao abrir e ao renomear o workspace."""
-        ws = getattr(self, "workspace", None)
-        self.agent_label.setText(self.agent["name"] + (f"  ·  {ws['name']}" if ws else ""))
 
     def _browse(self):
         d = QFileDialog.getExistingDirectory(self, "Diretório de trabalho", self.path.text() or os.path.expanduser("~"))
