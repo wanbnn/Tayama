@@ -312,6 +312,10 @@ class InfiniteCanvas(QGraphicsView):
                 ws = wss.get(e["workspace_id"])
                 if not ws:
                     print(f"Tayama: agente '{e['name']}' ignorado — workspace removido"); continue
+                # Já materializado (mesmo workspace restaurado duas vezes): pula.
+                # add_terminal() sobrescreveria canvas.windows[id] e deixaria o
+                # terminal antigo órfão na cena, com o PTY ainda vivo.
+                if e["id"] in self.windows: continue
                 skills = [s for s in cfg["skills"] if s["name"] in e.get("skills", [])]
                 self.add_terminal({
                     "id": e["id"], "name": e["name"], "agent": agent, "role": role, "workspace": ws,
@@ -348,6 +352,10 @@ class InfiniteCanvas(QGraphicsView):
                 ws = wss.get(w_id)
                 if not ws:
                     print(f"Tayama: painel '{spec.get('name')}' ignorado — workspace removido"); continue
+                # Já materializado (mesmo workspace restaurado duas vezes): pula.
+                # add_panel() recriaria o BrowserWindow, sobrescreveria
+                # canvas.panels[id] e deixaria o painel antigo órfão na cena.
+                if spec.get("id") in self.panels: continue
                 self.set_current_ws(ws)      # o painel nasce no seu próprio workspace
                 self.add_panel(spec.get("url") or "about:blank", name=spec.get("name"),
                                pos=(spec["x"], spec["y"]), size=(spec["w"], spec["h"]),
@@ -355,7 +363,10 @@ class InfiniteCanvas(QGraphicsView):
             for w_id, (src_id, dst_id) in links:
                 nodes = self._nodes_by_id(); src, dst = nodes.get(src_id), nodes.get(dst_id)
                 if src is None or dst is None: continue     # nó não voltou: descarta em silêncio
-                if src is dst or any(e.src is src and e.dst is dst for e in self.edges): continue
+                # dedup por ID, não por objeto: um nó recriado (restore repetido)
+                # é um objeto novo, e a comparação por identidade deixaria passar
+                # a seta antiga — duplicando a conexão no canvas.
+                if src_id == dst_id or any(e.src.id == src_id and e.dst.id == dst_id for e in self.edges): continue
                 e = Edge(self, src, dst); self.gscene.addItem(e); self.edges.append(e)
         finally:
             if ws_id is not None:
