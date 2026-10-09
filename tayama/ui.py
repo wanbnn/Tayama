@@ -289,12 +289,22 @@ class InfiniteCanvas(QGraphicsView):
         """Todos os nós do canvas (terminais + painéis) indexados por id."""
         return {**self.windows, **self.panels}
 
-    def restore_agents(self):
+    def restore_agents(self, ws_id=None):
+        """Restaura os terminais. ws_id filtra por workspace; None = todos.
+
+        O filtro existe para workspaces.duplicate: o clone nasce no disco e
+        precisa virar objeto vivo no canvas na hora, senão a sidebar (que monta
+        a árvore a partir de self.windows) mostra o clone vazio.
+        """
         cfg = config.load()
         wss = {w["id"]: w for w in workspaces.load()}
+        # ws_id None = todos os workspaces (startup). Com filtro, load_one() é o
+        # mesmo caminho de leitura por workspace que load_all() usa por dentro.
+        entries = agents.load_all() if ws_id is None else \
+            [e for e in agents.load_one(ws_id) if isinstance(e, dict)]
         self.blockSignals(True)
         try:
-            for e in agents.load_all():
+            for e in entries:
                 agent = next((a for a in cfg["agents"] if a["name"] == e["agent_name"]), None)
                 if not agent:
                     print(f"Tayama: agente '{e['name']}' ignorado — '{e['agent_name']}' não está mais em config"); continue
@@ -312,28 +322,44 @@ class InfiniteCanvas(QGraphicsView):
             self.blockSignals(False)
             self.changed.emit()
 
-    def restore_panels(self):
-        """Restaura os painéis e as conexões de todos os workspaces.
+    def restore_panels(self, ws_id=None):
+        """Restaura os painéis e as conexões. ws_id filtra por workspace; None = todos.
 
         Uma seta só volta se os dois nós voltarem; nó ausente = descarta em silêncio.
+
+        Com ws_id (materialização de um clone recém-duplicado) o workspace
+        corrente é preservado: o painel nasce no ws clonado, mas duplicar não
+        pode trocar o foco de quem está usando o app.
         """
         wss = {w["id"]: w for w in workspaces.load()}
+        previous_ws = self.current_ws
+        if ws_id is None:
+            panels = layout.load_all_panels()
+            links = layout.load_all_links()
+        else:
+            # load_panels() devolve o que _read() normalizou (pode não ser dict) —
+            # repetimos o filtro que load_all_panels faz, já que a spec é usada
+            # direto. load_links() ja devolve so pares válidos.
+            panels = [(ws_id, s) for s in layout.load_panels(ws_id) if isinstance(s, dict)]
+            links = [(ws_id, pair) for pair in layout.load_links(ws_id)]
         self.blockSignals(True)
         try:
-            for ws_id, spec in layout.load_all_panels():
-                ws = wss.get(ws_id)
+            for w_id, spec in panels:
+                ws = wss.get(w_id)
                 if not ws:
                     print(f"Tayama: painel '{spec.get('name')}' ignorado — workspace removido"); continue
                 self.set_current_ws(ws)      # o painel nasce no seu próprio workspace
                 self.add_panel(spec.get("url") or "about:blank", name=spec.get("name"),
                                pos=(spec["x"], spec["y"]), size=(spec["w"], spec["h"]),
                                _id=spec.get("id"), _persist=False)
-            for ws_id, (src_id, dst_id) in layout.load_all_links():
+            for w_id, (src_id, dst_id) in links:
                 nodes = self._nodes_by_id(); src, dst = nodes.get(src_id), nodes.get(dst_id)
                 if src is None or dst is None: continue     # nó não voltou: descarta em silêncio
                 if src is dst or any(e.src is src and e.dst is dst for e in self.edges): continue
                 e = Edge(self, src, dst); self.gscene.addItem(e); self.edges.append(e)
         finally:
+            if ws_id is not None:
+                self.current_ws = previous_ws      # duplicar não troca o workspace corrente
             self.blockSignals(False)
             self.changed.emit()
 

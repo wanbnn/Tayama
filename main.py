@@ -125,7 +125,13 @@ class MainWindow(QMainWindow):
         self.sidebar.refresh()
 
     def duplicate_workspace(self, ws):
-        workspaces.duplicate(ws)
+        new = workspaces.duplicate(ws)
+        # O clone nasce só no disco. A sidebar monta a árvore a partir dos
+        # objetos vivos do canvas, então sem materializar aqui ela mostraria o
+        # clone vazio — o usuário só veria os terminais/painéis após reiniciar.
+        # restore_panels(new['id']) preserva o workspace corrente.
+        self.canvas.restore_agents(new["id"])
+        self.canvas.restore_panels(new["id"])
         self.sidebar.refresh()     # o corrente não muda: duplicar não deve trocar o foco
 
     def new_agent(self, ws=None):
