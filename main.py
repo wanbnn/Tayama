@@ -2,18 +2,18 @@ import sys, subprocess
 from PyQt6.QtWidgets import QApplication, QMainWindow, QToolBar, QInputDialog, QMessageBox, QWidget, QHBoxLayout, QToolButton, QSizePolicy
 from PyQt6.QtCore import QSize, Qt, QPropertyAnimation, QEasingCurve
 from PyQt6.QtGui import QAction
-from agentdeck import config, workspaces
-from agentdeck.sidebar import Sidebar
-from agentdeck.icons import icon
-from agentdeck.ui import InfiniteCanvas, NewTerminalDialog, ConfigDialog, WorkspaceDialog
-from agentdeck.bridge import Bridge
+from tayama import config, workspaces
+from tayama.sidebar import Sidebar
+from tayama.icons import icon
+from tayama.ui import InfiniteCanvas, NewTerminalDialog, ConfigDialog, WorkspaceDialog
+from tayama.bridge import Bridge
 
 
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         config.ensure()
-        self.setWindowTitle("AgentDeck – Gerenciador de agentes CLI"); self.resize(1400, 800)
+        self.setWindowTitle("Tayama – Gerenciador de agentes CLI"); self.resize(1400, 800)
         self.canvas = InfiniteCanvas(self); self.canvas.setFrameShape(InfiniteCanvas.Shape.NoFrame)
         self.sidebar = Sidebar(self.canvas); self.sidebar.setMaximumWidth(self.SIDE_W)
         self.sidebar.new_agent.connect(self.new_agent); self.sidebar.new_workspace.connect(self.new_workspace)
@@ -58,7 +58,7 @@ class MainWindow(QMainWindow):
     def broadcast(self):
         text, ok = QInputDialog.getMultiLineText(self, "Enviar a todos", "Mensagem para todos os terminais:")
         if ok and text.strip():
-            for w in self.canvas.windows.values(): w.terminal.send_text(f"[AgentDeck/usuário] {text}")
+            for w in self.canvas.windows.values(): w.terminal.send_text(f"[Tayama/usuário] {text}")
 
     def edit_cfg(self): ConfigDialog(self).exec()
 

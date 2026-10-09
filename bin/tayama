@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""CLI usada pelos agentes dentro do AgentDeck.
-  agentdeck peers
-  agentdeck send <nome-ou-cargo> "mensagem"
-  agentdeck broadcast "mensagem"
+"""CLI usada pelos agentes dentro do Tayama.
+  tayama peers
+  tayama send <nome-ou-cargo> "mensagem"
+  tayama broadcast "mensagem"
 """
 import json, os, socket, sys
 
@@ -10,14 +10,14 @@ def main():
     a = sys.argv[1:]
     if not a or a[0] not in ("peers", "send", "broadcast"):
         print(__doc__); return 2
-    req = {"from": os.environ.get("AGENTDECK_ID"), "cmd": a[0]}
+    req = {"from": os.environ.get("TAYAMA_ID"), "cmd": a[0]}
     if a[0] == "send" and len(a) >= 3: req["target"], req["text"] = a[1], " ".join(a[2:])
     elif a[0] == "broadcast" and len(a) >= 2: req["text"] = " ".join(a[1:])
     elif a[0] != "peers": print(__doc__); return 2
     try:
-        s = socket.socket(socket.AF_UNIX); s.connect(os.environ["AGENTDECK_SOCK"])
+        s = socket.socket(socket.AF_UNIX); s.connect(os.environ["TAYAMA_SOCK"])
     except Exception as e:
-        print(f"AgentDeck indisponível: {e}"); return 1
+        print(f"Tayama indisponível: {e}"); return 1
     s.sendall((json.dumps(req) + "\n").encode())
     buf = b""
     while chunk := s.recv(4096): buf += chunk

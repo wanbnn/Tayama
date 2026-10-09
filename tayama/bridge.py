@@ -1,4 +1,4 @@
-"""Servidor local: permite que os agentes usem `agentdeck` para falar com terminais conectados."""
+"""Servidor local: permite que os agentes usem `tayama` para falar com terminais conectados."""
 import json
 from PyQt6.QtCore import QObject
 from PyQt6.QtNetwork import QLocalServer
@@ -28,7 +28,7 @@ class Bridge(QObject):
 
     def handle(self, req):
         src = self.canvas.windows.get(req.get("from"))
-        if not src: return {"ok": False, "error": "terminal de origem desconhecido (rode dentro do AgentDeck)"}
+        if not src: return {"ok": False, "error": "terminal de origem desconhecido (rode dentro do Tayama)"}
         peers = self.canvas.peers_of(src)
         info = [{"name": p.name, "role": p.role_name, "agent": p.agent["name"]} for p in peers]
         cmd = req.get("cmd")
