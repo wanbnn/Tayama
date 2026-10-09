@@ -81,6 +81,33 @@ def qapp():
     yield app
 
 
+def _fechar(c, qapp):
+    """Fecha um canvas sem derrubar o processo.
+
+    ACHADO DO TESTER: o canvas liga um QTimer de 33ms que chama Edge.refresh()
+    em todas as setas. Se esse timer continuar rodando durante o
+    processEvents() do teardown, ele toca em proxy/widget ja em destruicao e o
+    processo inteiro morre em SIGSEGV — era o que truncava esta suite no 2o
+    teste (reproduzido tambem numa copia limpa do HEAD, ou seja, preexistente).
+    Ordem obrigatoria: para o timer, mata o PTY, tira as setas da cena e so
+    entao processa os eventos.
+    """
+    from PyQt6.QtCore import QTimer
+    for tmr in c.findChildren(QTimer):
+        tmr.stop()
+    for win in list(c.windows.values()):
+        try:
+            win.terminal.terminate()
+        except Exception:
+            pass
+    for e in list(c.edges):
+        c.gscene.removeItem(e)
+    c.edges.clear()
+    c.close()
+    c.deleteLater()
+    qapp.processEvents()
+
+
 @pytest.fixture
 def canvas(qapp, home):
     """InfiniteCanvas novo, com um agente 'sleep' (nao lanca agente de verdade)."""
@@ -100,7 +127,8 @@ def canvas(qapp, home):
     c.resize(1200, 800)
     c.set_current_ws(ws)
     c._test_ws = ws
-    return c
+    yield c
+    _fechar(c, qapp)
 
 
 def term_spec(canvas, name, pid):
@@ -177,9 +205,7 @@ def test_fluxo_completo_sobrevive_a_reinicio(canvas, qapp, home):
     assert gravados == esperado_links, f"links no disco divergem: {gravados} != {esperado_links}"
 
     # --- fecha a sessao 1 ---------------------------------------------
-    canvas.close()
-    canvas.deleteLater()
-    qapp.processEvents()
+    _fechar(canvas, qapp)
 
     # --- sessao 2: reabre do zero -------------------------------------
     from tayama.ui import InfiniteCanvas
@@ -220,8 +246,7 @@ def test_fluxo_completo_sobrevive_a_reinicio(canvas, qapp, home):
         "restaurar reescreveu o arquivo (os 2 ids sao novos a cada vez?)"
 
     for cc in (c2, c3):
-        cc.close(); cc.deleteLater()
-    qapp.processEvents()
+        _fechar(cc, qapp)
 
 
 # ==========================================================================
