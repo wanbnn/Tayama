@@ -9,6 +9,8 @@ from .icons import icon, style_button
 class Sidebar(QWidget):
     new_agent = pyqtSignal(object)      # workspace dict
     new_workspace = pyqtSignal()
+    edit_workspace = pyqtSignal(object)     # workspace dict
+    duplicate_workspace = pyqtSignal(object)  # workspace dict
 
     def __init__(self, canvas, parent=None):
         super().__init__(parent); self.canvas = canvas; self.setObjectName("sidebar"); self.setMinimumWidth(0)
@@ -65,6 +67,8 @@ class Sidebar(QWidget):
             kind, obj = item.data(0, Qt.ItemDataRole.UserRole)
             if kind == "ws":
                 act = {m.addAction(icon("plus", "#c9d1d9"), "Novo agente aqui"): ("na", obj),
+                       m.addAction(icon("pencil", "#c9d1d9"), "Editar"): ("ed", obj),
+                       m.addAction(icon("copy", "#c9d1d9"), "Duplicar"): ("dup", obj),
                        m.addAction(icon("trash-can-outline", "#f85149"), "Remover workspace"): ("rm", obj)}
             else:
                 if kind == "panel":
@@ -84,6 +88,8 @@ class Sidebar(QWidget):
         elif kind == "cl": obj.close_window()
         elif kind == "cp": obj.close_panel()
         elif kind == "rm": self._remove(obj)
+        elif kind == "ed": self.edit_workspace.emit(obj)
+        elif kind == "dup": self.duplicate_workspace.emit(obj)
 
     def _remove(self, ws):
         wins = [w for w in self.canvas.windows.values() if w.workspace.get("id") == ws["id"]]

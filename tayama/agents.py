@@ -25,7 +25,9 @@ def _write(workspace_id, entries):
     if not entries:
         if f.exists(): f.unlink()        # arquivo vazio some
         return
-    f.write_text(json.dumps(entries, indent=2, ensure_ascii=False), "utf-8")
+    # config._write_private (0o600) como em layout.py: os specs carregam nome de
+    # agente, cargo e path de trabalho — o mesmo cuidado dos painéis/conexões.
+    config._write_private(f, json.dumps(entries, indent=2, ensure_ascii=False))
 
 
 def load_all():
@@ -57,6 +59,24 @@ def save_one(win):
         if e["id"] == win.id: entries[i] = spec; break
     else: entries.append(spec)
     _write(ws_id, entries)
+
+
+def load_one(workspace_id):
+    """Entradas cruas de um workspace, sem filtrar por dict.
+
+    Usado por workspaces.duplicate para clonar as specs persistidas — quem
+    clona decide o que é um item válido, já que precisa reescrever ids.
+    """
+    return _read(workspace_id)
+
+
+def save_all(workspace_id, specs):
+    """Sobrescreve todas as specs de um workspace (usado por workspaces.duplicate).
+
+    Simétrico a load_one(): a clonagem reescreve os ids antes de gravar, o que
+    o caminho por save_one() — que upserta uma janela por vez — não permite.
+    """
+    _write(workspace_id, [s for s in specs if isinstance(s, dict)])
 
 
 def remove_one(win_id, ws_id):

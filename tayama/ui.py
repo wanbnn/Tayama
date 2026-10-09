@@ -55,8 +55,9 @@ class FloatingWindow(QFrame):
         self.dot = QLabel("●"); self.dot.setStyleSheet("color:#3fb950;font-size:9px;")
         self.title = QLabel(self.name); self.title.setStyleSheet("color:#e6edf3;font-weight:600;font-size:10pt;")
         chip = QLabel(self.role_name); chip.setStyleSheet(f"background:{color};color:#101114;border-radius:8px;padding:0 9px;font-size:8pt;font-weight:700;"); chip.setFixedHeight(18)
-        ag = QLabel(self.agent["name"] + (f"  ·  {self.workspace['name']}" if self.workspace else "")); ag.setStyleSheet("color:#7d8590;font-size:8.5pt;")
-        for w_ in (self.dot, self.title, chip, ag): bl.addWidget(w_)
+        self.agent_label = QLabel(); self.agent_label.setStyleSheet("color:#7d8590;font-size:8.5pt;")
+        self.refresh_agent_label()
+        for w_ in (self.dot, self.title, chip, self.agent_label): bl.addWidget(w_)
         bl.addStretch()
         for ic, fb, tip, fn in (("clipboard-text-outline", "B", "Reenviar briefing (cargo + skills)", self.send_briefing),
                                 ("link-variant", "L", "Conectar a outro terminal (clique aqui e depois no ícone de link do destino)", lambda: canvas.start_link(self)),
@@ -361,16 +362,25 @@ class InfiniteCanvas(QGraphicsView):
 
 
 class WorkspaceDialog(QDialog):
-    def __init__(self, parent=None):
-        super().__init__(parent); self.setWindowTitle("Novo workspace"); self.resize(500, 150)
+    def __init__(self, existing=None, parent=None):
+        # existing: dict do workspace a editar (id preservado) ou None para criar.
+        super().__init__(parent); self.existing = existing or None
+        self.setWindowTitle("Editar workspace" if self.existing else "Novo workspace"); self.resize(500, 150)
         f = QFormLayout(self)
         self.name = QLineEdit(); self.name.setPlaceholderText("ex.: meu-projeto")
         self.path = QLineEdit(); self.path.setPlaceholderText("pasta onde os agentes vão trabalhar")
+        if self.existing:
+            self.name.setText(self.existing.get("name", "")); self.path.setText(self.existing.get("path", ""))
         br = QPushButton(); br.setFixedWidth(34); style_button(br, "folder-open-outline", "...", color="#ffffff"); br.clicked.connect(self._browse)
         row = QHBoxLayout(); row.addWidget(self.path); row.addWidget(br)
         f.addRow("Nome", self.name); f.addRow("Diretório", row)
         bb = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
         bb.accepted.connect(self._ok); bb.rejected.connect(self.reject); f.addRow(bb)
+
+    def refresh_agent_label(self):
+        """Reescreve 'agente · workspace' — chamado ao abrir e ao renomear o workspace."""
+        ws = getattr(self, "workspace", None)
+        self.agent_label.setText(self.agent["name"] + (f"  ·  {ws['name']}" if ws else ""))
 
     def _browse(self):
         d = QFileDialog.getExistingDirectory(self, "Diretório de trabalho", self.path.text() or os.path.expanduser("~"))

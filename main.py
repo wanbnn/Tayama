@@ -28,6 +28,8 @@ class MainWindow(QMainWindow):
         self.sidebar.setMaximumWidth(self.SIDE_W)
         self.sidebar.new_agent.connect(self.new_agent)
         self.sidebar.new_workspace.connect(self.new_workspace)
+        self.sidebar.edit_workspace.connect(self.edit_workspace)
+        self.sidebar.duplicate_workspace.connect(self.duplicate_workspace)
 
         self.rail = QToolButton()
         self.rail.setObjectName("rail")
@@ -98,13 +100,33 @@ class MainWindow(QMainWindow):
         self.anim.start()
 
     def new_workspace(self):
-        d = WorkspaceDialog(self)
+        d = WorkspaceDialog(parent=self)
         if d.exec():
             ws = workspaces.add(*d.value())
             self.canvas.set_current_ws(ws)      # painéis futuros nascem aqui
             self.sidebar.refresh()
             return True
         return False
+
+    def edit_workspace(self, ws):
+        d = WorkspaceDialog(ws, self)
+        if not d.exec(): return
+        updated = workspaces.update(ws["id"], *d.value())
+        if not updated: return
+        # janelas/painéis abertos guardam o dict antigo: atualizamos ao vivo,
+        # senão o nome novo só apareceria no label e na persistência após reiniciar.
+        for w in self.canvas.windows.values():
+            if w.workspace.get("id") == ws["id"]:
+                w.workspace = updated; w.refresh_agent_label()
+        for p in self.canvas.panels.values():
+            if (getattr(p, "workspace", None) or {}).get("id") == ws["id"]: p.workspace = updated
+        if self.canvas.current_ws and self.canvas.current_ws.get("id") == ws["id"]:
+            self.canvas.current_ws = updated   # painéis futuros continuam nascendo aqui
+        self.sidebar.refresh()
+
+    def duplicate_workspace(self, ws):
+        workspaces.duplicate(ws)
+        self.sidebar.refresh()     # o corrente não muda: duplicar não deve trocar o foco
 
     def new_agent(self, ws=None):
         wss = workspaces.load()

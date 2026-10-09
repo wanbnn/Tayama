@@ -98,6 +98,15 @@ def load_panels(ws_id):
     return _read(PANELS, ws_id)
 
 
+def save_panels(ws_id, specs):
+    """Sobrescreve as specs de painéis do workspace (usado por workspaces.duplicate).
+
+    Aceita a lista inteira em vez de uma janela porque a clonagem reescreve os
+    ids antes de gravar — o caminho por save_panel() só upserta uma por vez.
+    """
+    _write(PANELS, ws_id, [s for s in specs if isinstance(s, dict)])
+
+
 def _all(kind):
     """[(ws_id, item), ...] de todos os workspaces, lendo por _read().
 
