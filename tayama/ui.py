@@ -241,9 +241,9 @@ class InfiniteCanvas(QGraphicsView):
     # --- painéis web ----------------------------------------------------
     # Import tardio: tayama.browser importa daqui (BTN/ResizeGrip) e o QtWebEngine
     # precisa ser carregado antes do QApplication.
-    def add_panel(self, url="about:blank", name=None, pos=None, size=None, _persist=True):
+    def add_panel(self, url="about:blank", name=None, pos=None, size=None, _id=None, _persist=True):
         from .browser import BrowserWindow
-        win = BrowserWindow(self, url, name)
+        win = BrowserWindow(self, url, name, _id)
         win.workspace = self.current_ws      # None se não houver workspace: aí não persiste
         proxy = self.gscene.addWidget(win); win.proxy = proxy
         if pos and size:
@@ -316,7 +316,7 @@ class InfiniteCanvas(QGraphicsView):
                 self.set_current_ws(ws)      # o painel nasce no seu próprio workspace
                 self.add_panel(spec.get("url") or "about:blank", name=spec.get("name"),
                                pos=(spec["x"], spec["y"]), size=(spec["w"], spec["h"]),
-                               _persist=False)
+                               _id=spec.get("id"), _persist=False)
             for ws_id, (src_id, dst_id) in layout.load_all_links():
                 nodes = self._nodes_by_id(); src, dst = nodes.get(src_id), nodes.get(dst_id)
                 if src is None or dst is None: continue     # nó não voltou: descarta em silêncio

@@ -24,10 +24,13 @@ OK, LOADING, CRASHED = "ok", "loading", "crashed"
 class BrowserWindow(QFrame):
     """Janela flutuante com navegador; mesma linguagem visual da FloatingWindow."""
 
-    def __init__(self, canvas, url="about:blank", name=None):
+    def __init__(self, canvas, url="about:blank", name=None, _id=None):
         super().__init__()
         self.canvas = canvas
-        self.id = f"panel-{uuid.uuid4().hex[:8]}"
+        # _id só vem na restauração: sem ele o painel voltaria com id novo e as
+        # conexões salvas (que guardam o id antigo) ficariam órfãs. Mesmo
+        # contrato da FloatingWindow, que honra spec['id'].
+        self.id = _id or f"panel-{uuid.uuid4().hex[:8]}"
         self.name = name or f"painel-{uuid.uuid4().hex[:3]}"
         # papel/agent fictícios: o Edge e a Bridge usam estes campos para desenhar
         # a seta e listar peers. receive() ignora texto (painel não é um terminal).
