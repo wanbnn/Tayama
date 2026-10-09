@@ -365,3 +365,175 @@ def test_duplicar_nao_troca_o_workspace_corrente(qapp, home):
         assert len(paineis) == 1, "o painel do clone ficou no workspace errado"
     finally:
         w.deleteLater()
+
+def _encerrar(w, qapp):
+    """Fecha uma MainWindow com terminais e paineis reais sem derrubar o processo.
+
+    Os testes abaixo sobem o app de verdade, com QWebEngineView dentro de
+    proxies. `w.deleteLater()` sozinho NAO basta: sem processar a fila de
+    DeferredDelete o Chromium continua vivo e morre na saida do interpretador
+    (SIGSEGV em QQuickWindow::~QQuickWindow, medido aqui). Fecha os nos um a
+    um — cada um sai da SUA cena — e so entao destroi a janela.
+
+    Equivalente ao _fechar() dos arquivos de canvas, para o nivel MainWindow.
+    """
+    from PyQt6.QtCore import QCoreApplication, QEvent, QTimer
+    c = w.canvas
+    for tmr in c.findChildren(QTimer):
+        tmr.stop()
+    for win in list(c.windows.values()):
+        win.close_window()
+    for pan in list(c.panels.values()):
+        pan.close_panel()
+    for _ in range(12):
+        qapp.processEvents()
+        QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+    w.close()
+    w.deleteLater()
+    for _ in range(8):
+        qapp.processEvents()
+        QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+
+
+# ==========================================================================
+# 4. ISOLAMENTO ENTRE WORKSPACES (o MainWindow real, ponta a ponta)
+# ==========================================================================
+# Ate aqui os testes atacam workspaces.py; os tres de baixo sobem o MainWindow
+# e verificam o comportamento que o usuario pediu: clicar num workspace leva ao
+# canvas DELE, e nada atravessa essa fronteira.
+def test_broadcast_so_chega_ao_workspace_exibido(qapp, home):
+    """"Enviar a todos" = todos os terminais DO WORKSPACE VISIVEL.
+
+    A barra dizia "todos" e mandava para todos os workspaces — o que numa
+    ferramenta onde cada workspace e um ambiente separado entrega a mensagem no
+    ambiente errado. Aqui os dois workspaces estao abertos, com um terminal cada.
+
+    O QInputDialog e o QMessageBox sao monkeypatchados: o teste e sobre o
+    roteamento, nao sobre a caixa de dialogo.
+    """
+    _config_com_agente(home)
+    import main
+    from tayama import workspaces
+
+    w = main.MainWindow()
+    try:
+        c = w.canvas
+        alfa = workspaces.add("Alfa", str(home))
+        beta = workspaces.add("Beta", str(home))
+        ta = c.add_terminal(term_spec(alfa, "alfa-1", "term-alfa"))
+        tb = c.add_terminal(term_spec(beta, "beta-1", "term-beta"))
+        qapp.processEvents()
+
+        enviados = []
+        for t in (ta, tb):
+            t.terminal.send_text = lambda txt, _t=t: enviados.append((_t.id, txt))
+
+        import PyQt6.QtWidgets as W
+        monkey = W.QInputDialog.getMultiLineText
+        W.QInputDialog.getMultiLineText = staticmethod(
+            lambda *a, **k: ("deploy agora", True))
+        try:
+            # com Alfa na tela: so o terminal de Alfa recebe
+            c.set_current_ws(alfa); qapp.processEvents()
+            w.broadcast()
+            assert [i for i, _ in enviados] == ["term-alfa"], \
+                f"o broadcast vazou para outro workspace: {enviados}"
+
+            # com Beta na tela: so o de Beta — e nao acumula com o envio anterior
+            enviados.clear()
+            c.set_current_ws(beta); qapp.processEvents()
+            w.broadcast()
+            assert [i for i, _ in enviados] == ["term-beta"], \
+                f"o broadcast nao acompanhou a troca de canvas: {enviados}"
+        finally:
+            W.QInputDialog.getMultiLineText = monkey
+    finally:
+        _encerrar(w, qapp)
+
+
+def test_clique_no_workspace_na_sidebar_troca_o_canvas(qapp, home):
+    """O gatilho do pedido: clicar num workspace leva ao canvas DELE.
+
+    Antes nao havia itemClicked nenhum — so itemDoubleClicked, que apenas
+    centralizava. Clicar no nome do workspace nao trocava nada: todos os
+    terminais de todos os ambientes apareciam juntos no mesmo canvas.
+    """
+    _config_com_agente(home)
+    import main
+    from tayama import workspaces
+    from PyQt6.QtCore import Qt
+
+    w = main.MainWindow()
+    try:
+        c, sb = w.canvas, w.sidebar
+        alfa = workspaces.add("Alfa", str(home))
+        beta = workspaces.add("Beta", str(home))
+        c.add_terminal(term_spec(alfa, "alfa-1", "term-alfa"))
+        c.add_terminal(term_spec(beta, "beta-1", "term-beta"))
+        c.set_current_ws(alfa)
+        sb.refresh()
+        qapp.processEvents()
+        assert c.scene() is c._scene_of(alfa), "premissa: Alfa nao esta no canvas"
+
+        # achar o item do workspace Beta na arvore e "clicar" nele
+        alvo = None
+        for i in range(sb.tree.topLevelItemCount()):
+            it = sb.tree.topLevelItem(i)
+            kind, obj = it.data(0, Qt.ItemDataRole.UserRole)
+            if kind == "ws" and obj["id"] == beta["id"]:
+                alvo = it
+        assert alvo is not None, "Beta nao apareceu na arvore da sidebar"
+
+        sb.tree.itemClicked.emit(alvo, 0)      # o sinal que sidebar.py:26 conecta
+        qapp.processEvents()                   # a troca e adiada (QTimer.singleShot)
+
+        assert c.scene() is c._scene_of(beta), \
+            "clicar em Beta nao trocou o canvas exibido"
+        assert (c.current_ws or {}).get("id") == beta["id"], \
+            "o workspace corrente nao acompanhou o clique"
+        visiveis = {id(i) for i in c.scene().items()}
+        assert id(c.windows["term-alfa"].proxy) not in visiveis, \
+            "o terminal de Alfa continua no canvas de Beta"
+    finally:
+        _encerrar(w, qapp)
+
+
+def test_focar_no_de_outro_workspace_troca_o_canvas_antes_de_centralizar(qapp, home):
+    """Duplo clique / "Ir até o terminal" num no de outro workspace.
+
+    centerOn() num item de OUTRA cena nao levanta: ele centraliza em coordenadas
+    sem sentido, em silencio (medido no Qt 6.11: centralizou (1299,1249) para um
+    proxy em (1100,1100)). A sidebar precisa trocar a cena antes.
+    """
+    _config_com_agente(home)
+    import main
+    from tayama import workspaces
+    from PyQt6.QtCore import QPointF
+
+    w = main.MainWindow()
+    try:
+        c, sb = w.canvas, w.sidebar
+        alfa = workspaces.add("Alfa", str(home))
+        beta = workspaces.add("Beta", str(home))
+        c.add_terminal(term_spec(alfa, "alfa-1", "term-alfa"))
+        alvo = c.add_terminal(term_spec(beta, "beta-1", "term-beta"))
+        alvo.proxy.setPos(QPointF(1100, 1100))
+        c.set_current_ws(alfa)                 # o usuario esta no canvas de Alfa
+        qapp.processEvents()
+        assert c.scene() is c._scene_of(alfa), "premissa: Alfa nao esta no canvas"
+
+        sb.focus(alvo)
+        qapp.processEvents()
+
+        assert c.scene() is c._scene_of(beta), \
+            "focar num terminal de Beta nao trocou o canvas"
+        # centerOn(proxy) centraliza o CENTRO do retangulo do proxy, nao o seu
+        # setPos (o canto superior esquerdo) — medido no Qt 6.11.
+        esperado = alvo.proxy.sceneBoundingRect().center()
+        centro = c.mapToScene(c.viewport().rect().center())
+        assert (centro - esperado).manhattanLength() < 40, (
+            f"o canvas nao centralizou no terminal: esperava perto de "
+            f"({esperado.x():.0f},{esperado.y():.0f}), "
+            f"veio ({centro.x():.0f},{centro.y():.0f})")
+    finally:
+        _encerrar(w, qapp)

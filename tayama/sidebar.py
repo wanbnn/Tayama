@@ -1,5 +1,5 @@
 """Sidebar de workspaces: cada workspace define a pasta de trabalho; agentes aparecem agrupados."""
-from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtCore import Qt, QTimer, pyqtSignal
 from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QTreeWidget,
                              QTreeWidgetItem, QMenu, QMessageBox)
 from . import workspaces
@@ -20,6 +20,10 @@ class Sidebar(QWidget):
         self.tree = QTreeWidget(); self.tree.setHeaderHidden(True); self.tree.setIndentation(14); self.tree.setExpandsOnDoubleClick(False)
         self.tree.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu); self.tree.setFrameShape(QTreeWidget.Shape.NoFrame)
         self.tree.customContextMenuRequested.connect(self._menu); self.tree.itemDoubleClicked.connect(self._open)
+        # Clique simples = "me mostra aquele workspace". Duplo clique continua
+        # sendo "me leva até aquele nó" (_open). São dois gestos diferentes: um
+        # troca o canvas, o outro centraliza num terminal específico.
+        self.tree.itemClicked.connect(self._select)
         self.empty = QLabel("Crie um workspace para definir a pasta de trabalho dos seus agentes."); self.empty.setWordWrap(True)
         self.empty.setStyleSheet("color:#6e7681;padding:6px;")
         v.addWidget(self.empty); v.addWidget(self.tree, 1)
@@ -38,6 +42,11 @@ class Sidebar(QWidget):
             pans = [p for p in self.canvas.panels.values() if (getattr(p, "workspace", None) or {}).get("id") == ws["id"]]
             it = QTreeWidgetItem([f"{ws['name']}   {len(wins) + len(pans)}" if wins or pans else ws["name"]])
             it.setIcon(0, icon("folder-outline", "#e5c07b")); it.setToolTip(0, ws["path"]); it.setData(0, Qt.ItemDataRole.UserRole, ("ws", ws))
+            # Marca o workspace que está no canvas: sem isso não há como saber
+            # em qual ambiente se está — todas as árvores parecem iguais.
+            if ws["id"] == (self.canvas.current_ws or {}).get("id"):
+                f = it.font(0); f.setBold(True); it.setFont(0, f)
+                it.setToolTip(0, f"{ws['path']}  ·  no canvas atual")
             self.tree.addTopLevelItem(it)
             for w in wins:
                 c = QTreeWidgetItem([f"{w.name}  ·  {w.role_name}"])
@@ -49,12 +58,38 @@ class Sidebar(QWidget):
                 c.setData(0, Qt.ItemDataRole.UserRole, ("panel", p)); it.addChild(c)
             it.setExpanded(first or ws["id"] in open_ids)
 
+    def _select(self, item, _=0):
+        """Clique simples: leva ao canvas daquele workspace.
+
+        Ler os dados ANTES de qualquer troca — set_current_ws emite `changed`, e
+        a Sidebar.refresh() faz tree.clear() dentro deste handler, deixando o
+        `item` pendurado.
+        """
+        data = item.data(0, Qt.ItemDataRole.UserRole)
+        if not data: return
+        kind, obj = data
+        ws = obj if kind == "ws" else (getattr(obj, "workspace", None) or None)
+        if not ws: return
+        if ws.get("id") == (self.canvas.current_ws or {}).get("id"): return
+        # Adiado para fora do handler do Qt: trocar a cena agora rebuildaria a
+        # árvore no meio do clique.
+        QTimer.singleShot(0, lambda ws=ws: self.canvas.set_current_ws(ws))
+
     def _open(self, item, _=0):
         kind, obj = item.data(0, Qt.ItemDataRole.UserRole)
         if kind in ("win", "panel"): self.focus(obj)
         else: item.setExpanded(not item.isExpanded())
 
     def focus(self, win):
+        """Traz um nó para o centro da tela.
+
+        Troca a cena ANTES de centralizar: centerOn() num item de outra cena
+        não levanta — ele centraliza em coordenadas sem sentido, em silêncio
+        (medido: centralizou (1299,1249) para um proxy em (1100,1100)).
+        """
+        ws = getattr(win, "workspace", None)
+        if ws and ws.get("id") != (self.canvas.current_ws or {}).get("id"):
+            self.canvas.set_current_ws(ws)
         self.canvas._z = getattr(self.canvas, "_z", 0) + 1; win.proxy.setZValue(self.canvas._z)
         self.canvas.centerOn(win.proxy)
         # painéis não têm terminal — focar o frame evita AttributeError
@@ -99,4 +134,8 @@ class Sidebar(QWidget):
                 != QMessageBox.StandardButton.Yes: return
         for w in wins: w.close_window()
         for p in pans: p.close_panel()
+        # Antes de workspaces.remove: o canvas precisa soltar a cena e o
+        # enquadramento do workspace, senão ficariam em canvas.scenes para
+        # sempre, vazios e segurando memória.
+        self.canvas.forget_workspace(ws["id"])
         workspaces.remove(ws["id"]); self.refresh()

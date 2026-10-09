@@ -1,6 +1,6 @@
 import sys, subprocess
 from PyQt6.QtWidgets import QApplication, QMainWindow, QToolBar, QInputDialog, QMessageBox, QWidget, QHBoxLayout, QToolButton, QSizePolicy
-from PyQt6.QtCore import QSize, Qt, QPropertyAnimation, QEasingCurve
+from PyQt6.QtCore import QSize, Qt, QPropertyAnimation, QEasingCurve, QTimer
 from PyQt6.QtGui import QAction
 # O QtWebEngine exige que QtWebEngineWidgets seja importado ANTES do QApplication.
 # Este import também puxa tayama/browser.py, garantindo isso.
@@ -13,6 +13,12 @@ from tayama.bridge import Bridge
 
 
 class MainWindow(QMainWindow):
+    # Dica permanente da barra de status. Os avisos temporários (ex.: conexão
+    # recusada entre workspaces) precisam devolvê-la: showMessage() SUBSTITUI a
+    # mensagem, e sem restaurá-la a dica sumiria para sempre.
+    DICA = ("Conexões: clique no link de origem e depois no destino  ·  "
+            "Ctrl + scroll: zoom  ·  Espaço + arrastar: mover canvas")
+
     def __init__(self):
         super().__init__()
         config.ensure()
@@ -55,6 +61,10 @@ class MainWindow(QMainWindow):
         self._open = True
         self._rail_icon()
         self.bridge = Bridge(self.canvas)
+        # Aviso temporário na barra de status, com a dica de volta depois.
+        # statusBar() existe desde o __init__ do QMainWindow, então conectar
+        # aqui (antes do show()) funciona.
+        self.canvas.notice.connect(self._aviso)
         self.canvas.restore_agents()
         self.canvas.restore_panels()
 
@@ -80,10 +90,12 @@ class MainWindow(QMainWindow):
             act.triggered.connect(fn)
             tb.addAction(act)
 
-        self.statusBar().showMessage(
-            "Conexões: clique no link de origem e depois no destino  ·  "
-            "Ctrl + scroll: zoom  ·  Espaço + arrastar: mover canvas"
-        )
+        self.statusBar().showMessage(self.DICA)
+
+    def _aviso(self, msg):
+        """Mostra um aviso na barra de status e devolve a dica permanente."""
+        self.statusBar().showMessage(msg, 6000)
+        QTimer.singleShot(6200, lambda: self.statusBar().showMessage(self.DICA))
 
     SIDE_W = 292
 
@@ -121,7 +133,10 @@ class MainWindow(QMainWindow):
         for p in self.canvas.panels.values():
             if (getattr(p, "workspace", None) or {}).get("id") == ws["id"]: p.workspace = updated
         if self.canvas.current_ws and self.canvas.current_ws.get("id") == ws["id"]:
-            self.canvas.current_ws = updated   # painéis futuros continuam nascendo aqui
+            # set_current_ws (e não atribuição direta): o id não muda, então o
+            # roteamento por cena segue o mesmo, mas assim o `changed` é emitido
+            # e a sidebar reflete o nome novo na hora.
+            self.canvas.set_current_ws(updated)
         self.sidebar.refresh()
 
     def duplicate_workspace(self, ws):
@@ -150,9 +165,21 @@ class MainWindow(QMainWindow):
         self.canvas.add_panel("about:blank")
 
     def broadcast(self):
-        text, ok = QInputDialog.getMultiLineText(self, "Enviar a todos", "Mensagem para todos os terminais:")
+        # Só o workspace visível: cada workspace é um ambiente separado, e
+        # mandar para todos atravessando ambientes seria justamente o que a
+        # separação veio evitar.
+        ws_id = (self.canvas.current_ws or {}).get("id")
+        alvo = [w for w in self.canvas.windows.values()
+                if (getattr(w, "workspace", None) or {}).get("id") == ws_id]
+        if not ws_id or not alvo:
+            QMessageBox.information(
+                self, "Enviar a todos",
+                "Nenhum terminal neste workspace para receber a mensagem.")
+            return
+        text, ok = QInputDialog.getMultiLineText(
+            self, "Enviar a todos", f"Mensagem para os terminais de '{self.canvas.current_ws['name']}':")
         if ok and text.strip():
-            for w in self.canvas.windows.values():
+            for w in alvo:
                 w.terminal.send_text(f"[Tayama/usuário] {text}")
 
     def edit_cfg(self):

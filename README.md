@@ -13,26 +13,31 @@ em terminais PTY reais, com **cargos**, **skills** e **conexões** entre termina
 
 ## Como usar
 1. Abra a sidebar à direita (Ctrl+B) e crie um **workspace** (nome + diretório de trabalho). Depois use **Novo agente**: a pasta vem do workspace escolhido.
-2. Clique no ícone de link num terminal (origem) e depois no ícone de link de outro (destino): surge uma seta
+2. **Cada workspace tem o seu próprio canvas.** Clicar num workspace na sidebar troca o canvas: você vê só os terminais e painéis daquele ambiente, e não os dos outros. O workspace em uso fica em negrito. Trocar de canvas não derruba nada — os terminais dos outros workspaces continuam rodando em segundo plano, e cada workspace lembra o seu próprio zoom e posição (durante a sessão).
+3. Clique no ícone de link num terminal (origem) e depois no ícone de link de outro (destino): surge uma seta
    *origem → destino* = a origem pode enviar mensagens ao destino. Conecte nos dois sentidos se quiser conversa mútua.
-   Botão direito na seta remove.
-3. Ao iniciar, o agente recebe um **briefing** (cargo + skills + instruções + conectados). o ícone de prancheta reenvia.
-4. Dentro de cada terminal existe o comando `tayama` (as ferramentas dos agentes):
+   Botão direito na seta remove. **As conexões são só dentro do mesmo workspace** — workspaces são ambientes
+   separados, então ligar um terminal de um workspace a outro é recusado e o app avisa na barra de status.
+4. Ao iniciar, o agente recebe um **briefing** (cargo + skills + instruções + conectados). o ícone de prancheta reenvia.
+5. Dentro de cada terminal existe o comando `tayama` (as ferramentas dos agentes):
        tayama peers
        tayama send <nome-ou-cargo> "mensagem"
        tayama broadcast "mensagem"
    A mensagem aparece no input do destino como `[tayama de <nome> (<cargo>)] ...`.
-5. **Agentes/Cargos/Skills** edita agentes/cargos/skills (JSON em `~/.tayama/config.json`). Todo `.md` em
+   O `broadcast` alcança **todos os terminais do workspace que está na tela** — nada atravessa a fronteira entre workspaces.
+6. **Agentes/Cargos/Skills** edita agentes/cargos/skills (JSON em `~/.tayama/config.json`). Todo `.md` em
    `~/.tayama/skills/` vira uma skill. Crie quantos cargos quiser (nome, cor, prompt).
 
 ## Atalhos
 Ctrl+scroll: zoom · botão do meio ou Espaço+arrastar: mover a tela · Ctrl+Shift+C/V: copiar/colar no terminal.
+Clique simples no workspace na sidebar: trocar de canvas · duplo clique: ir até aquele terminal ou painel.
 
 ## Estrutura
     main.py                 janela principal
     tayama/config.py     config, cargos, skills (~/.tayama)
     tayama/terminal.py   PTY + emulação (pyte)
-    tayama/ui.py         janelas, setas, canvas, diálogos
+    tayama/ui.py         janelas, setas, canvas (uma cena por workspace), diálogos
+    tayama/sidebar.py    árvore de workspaces, troca de canvas
     tayama/bridge.py     servidor local de mensagens
     bin/tayama           CLI usada pelos agentes
 

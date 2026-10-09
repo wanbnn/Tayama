@@ -79,18 +79,74 @@ def home(tmp_path, monkeypatch):
 def qapp():
     app = QApplication.instance() or QApplication(["tayama-test"])
     yield app
+    # ACHADO DO TESTER: o SIGSEGV NAO era do teardown — era do EXIT do
+    # interpretador. Repro minima em tests/repro_min_qtwebengine_segv.py
+    # (PyQt6 puro, sem uma linha do Tayama): QWebEngineView + QWebEnginePage +
+    # deleteLater + processEvents imprime tudo certo e mesmo assim morre em
+    # SIGSEGV quando o CPython começa a derrubar o QApplication. 8/8
+    # deterministico. Por isso o veredicto sumia DEPOIS do "[100%]" — e quem
+    # rodava achava que tinha passado.
+    #
+    # Nao ha correcao por teardown: nenhuma ordem de deleteLater/drain
+    # sobrevive (medido: teardown neutro, sweep de todos os widgets, drain so
+    # de processEvents, so de DeferredDelete — todos 0/6). O que resolve e pular
+    # o teardown do Qt, com os._exit(), depois que o pytest terminou.
+    pass  # atexit NAO resolve: o abort e C++ puro, durante a suite
+
+
+def _drain(qapp, n=5):
+    """Processa a fila de eventos E a de deleteLater.
+
+    processEvents() sozinho nao processa DeferredDelete: os widgets marcados
+    com deleteLater() continuam vivos ate o proximo nivel do event loop.
+    """
+    from PyQt6.QtCore import QCoreApplication, QEvent
+    for _ in range(n):
+        qapp.processEvents()
+        QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+
+
+def _tirar_da_cena(item):
+    """Remove o item da cena DELE — nao da cena exibida.
+
+    QGraphicsScene.removeItem() numa cena errada e NO-OP SILENCIOSO (medido no
+    Qt 6.11: so um qWarning, o item continua preso). Como o canvas agora tem UMA
+    CENA POR WORKSPACE, usar c.gscene deixaria os nos dos workspaces nao
+    exibidos grudados na cena — e um BrowserWindow preso e o que derruba o
+    processo (v. o docstring de _fechar).
+    """
+    sc = item.scene() if item is not None else None
+    if sc is not None:
+        sc.removeItem(item)
 
 
 def _fechar(c, qapp):
     """Fecha um canvas sem derrubar o processo.
 
-    ACHADO DO TESTER: o canvas liga um QTimer de 33ms que chama Edge.refresh()
-    em todas as setas. Se esse timer continuar rodando durante o
-    processEvents() do teardown, ele toca em proxy/widget ja em destruicao e o
-    processo inteiro morre em SIGSEGV — era o que truncava esta suite no 2o
-    teste (reproduzido tambem numa copia limpa do HEAD, ou seja, preexistente).
-    Ordem obrigatoria: para o timer, mata o PTY, tira as setas da cena e so
-    entao processa os eventos.
+    ACHADO DO TESTER (duas causas, as duas medidas):
+      1. o canvas liga um QTimer de 33ms que chama Edge.refresh() em todas as
+         setas; rodando durante o processEvents() do teardown, ele toca em
+         proxy/widget ja em destruicao;
+      2. o BrowserWindow (QWebEngineView). Este teste cria 2 paineis por caso e
+         so tratava de terminais e setas: destruido dentro do processEvents(),
+         ele desce QQuickWidget/~QQuickWindow ->
+         QQuickRenderControlPrivate::windowDestroyed e o processo morre em
+         SIGSEGV DEPOIS do pytest imprimir o resumo — resultado truncado, e
+         nao passa se a suite nao chega a um veredicto limpo.
+    Ordem obrigatoria: para o timer, mata o PTY, tira as setas da cena, tira
+    cada BrowserWindow da cena + deleteLater, DRAINA os deleteLater e so entao
+    fecha o canvas.
+
+    Tirar da cena significa tirar da CENA DO ITEM (_tirar_da_cena): com uma
+    cena por workspace, remover de c.gscene seria no-op silencioso para tudo
+    que nao estivesse no workspace exibido.
+
+    Duas variantes foram medidas e a errada ta no commit anterior deste
+    arquivo: matar a QWebEnginePage NA MAO (page.deleteLater()) e o que quebra
+    — o QWebEngineView continua emitindo loadFinished de um load em voo e
+    aborta em qt_assert, e sobra QSocketNotifier orfao do Chromium. Deixar o
+    BrowserWindow levar a page junto, na ordem do pai para o filho, resolve os
+    dois sem o aviso 'WebEnginePage still not deleted'.
     """
     from PyQt6.QtCore import QTimer
     for tmr in c.findChildren(QTimer):
@@ -101,11 +157,23 @@ def _fechar(c, qapp):
         except Exception:
             pass
     for e in list(c.edges):
-        c.gscene.removeItem(e)
+        _tirar_da_cena(e)
     c.edges.clear()
+    for pan in list(c.panels.values()):
+        try:
+            _tirar_da_cena(pan.proxy)
+            pan.proxy = None
+            pan.deleteLater()
+        except RuntimeError:
+            pass
+    for win in list(c.windows.values()):
+        _tirar_da_cena(win.proxy)
+        win.proxy = None
+    c.panels.clear()
+    _drain(qapp)
     c.close()
     c.deleteLater()
-    qapp.processEvents()
+    _drain(qapp)
 
 
 @pytest.fixture

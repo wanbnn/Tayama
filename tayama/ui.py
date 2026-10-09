@@ -1,7 +1,7 @@
 """Janelas flutuantes, conexões (setas), canvas infinito e diálogos."""
 import math, os, shlex, uuid
 from PyQt6.QtCore import Qt, QPointF, QTimer, pyqtSignal
-from PyQt6.QtGui import QPainter, QColor, QPen, QBrush, QPolygonF, QPainterPath
+from PyQt6.QtGui import QPainter, QColor, QPen, QBrush, QPolygonF, QPainterPath, QTransform
 from PyQt6.QtWidgets import (
     QGraphicsView, QGraphicsScene, QGraphicsPathItem, QFrame, QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QPushButton, QMenu, QDialog, QFormLayout, QLineEdit, QComboBox, QListWidget,
@@ -171,28 +171,180 @@ class Edge(QGraphicsPathItem):
         if menu.exec(e.screenPos()) == act: self.canvas.remove_edge(self)
 
 
+# Rectângulo virtual da grade. Compartilhado por TODAS as cenas: como o Qt
+# preserva o transform ao trocar de cena, um mesmo rect mantém as coordenadas
+# comparáveis entre workspaces — é o que torna _save_view/_restore_view válidos.
+SCENE_RECT = (-50000, -50000, 100000, 100000)
+
+
+_CURRENT = object()   # sentinela de "não passei workspace" (ver add_panel)
+
+
+def _ws_id(ws):
+    """Id do workspace, ou "" quando o nó não pertence a nenhum.
+
+    O "" é a chave da cena sem workspace (ver InfiniteCanvas._scene_of).
+    """
+    return ((ws or {}) or {}).get("id") or ""
+
+
+def _item_scene(item):
+    """Cena à qual o item PERTENCE — não a cena exibida.
+
+    QGraphicsScene.removeItem() numa cena errada é NO-OP SILENCIOSO (medido no
+    Qt 6.11: só um qWarning, o item continua preso). Por isso todo desaninhamento
+    usa a cena do próprio item: com uma cena por workspace, remover da cena
+    "atual" deixaria os nós dos outros workspaces grudados — e um BrowserWindow
+    preso é o que derruba o processo no teardown (v. _fechar nos testes).
+    """
+    return item.scene() if item is not None else None
+
+
+def _out_of(item):
+    """Tira o item da cena dele. Idempotente: item já solto não faz nada."""
+    sc = _item_scene(item)
+    if sc is not None:
+        sc.removeItem(item)
+    return sc
+
+
 class InfiniteCanvas(QGraphicsView):
     changed = pyqtSignal()   # terminais adicionados/removidos/encerrados
+    notice = pyqtSignal(str)  # avisos para a barra de status (ex.: link recusado)
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.gscene = QGraphicsScene(self); self.setScene(self.gscene)
-        self.gscene.setSceneRect(-50000, -50000, 100000, 100000)
+        # Uma cena por workspace: clicar num workspace na sidebar troca a cena
+        # exibida em vez de revelar tudo misturado. self.gscene é a cena de
+        # current_ws, mantida como atributo porque o restante do código (e os
+        # testes) fala dela.
+        self.scenes, self._views = {}, {}
+        self.gscene = self._scene_of(None)
         self.setRenderHint(QPainter.RenderHint.Antialiasing)
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        # Registros GLOBAIS: contêm os nós de todos os workspaces, mesmo os que
+        # não estão na tela (eles continuam rodando em background). É o que
+        # mantém a Bridge e a sidebar funcionando sem saber de cenas.
         self.windows, self.edges, self.panels = {}, [], {}
         self._link_src = None; self._panning = False; self._space = False; self._n = 0
-        # Workspace corrente: onde nascem os painéis. Padrão = último da lista,
-        # ou None se não houver nenhum (painel ainda funciona, só não persiste).
+        # Workspace corrente: o exibido, e onde nascem painéis novos. Padrão =
+        # último da lista, ou None se não houver nenhum (painel ainda funciona,
+        # só não persiste).
         wss = workspaces.load()
         self.current_ws = wss[-1] if wss else None
-        t = QTimer(self, interval=33); t.timeout.connect(lambda: [e.refresh() for e in self.edges]); t.start()
+        self._swap_scene(self.current_ws, _save=False)
+        t = QTimer(self, interval=33); t.timeout.connect(self._tick_edges); t.start()
+
+    # --- cenas por workspace --------------------------------------------
+    def _scene_of(self, ws):
+        """Cena do workspace, criando se ainda não existir. ws None/{} -> cena ''.
+
+        A cena '' (sentinela) é onde vivem nós sem workspace. Ela é uma cena
+        normal, não um buraco: assim o app com current_ws=None ainda mostra o
+        grid, e um painel sem workspace continua visível em vez de sumir.
+        """
+        k = _ws_id(ws)
+        sc = self.scenes.get(k)
+        if sc is None:
+            sc = QGraphicsScene(self); sc.setSceneRect(*SCENE_RECT)
+            self.scenes[k] = sc
+        return sc
 
     def set_current_ws(self, ws):
-        """Define o workspace corrente (painéis novos nascem aqui)."""
-        self.current_ws = ws or None
+        """Troca o workspace exibido (a cena) e o que é 'corrente' para nascimentos.
+
+        Salva o enquadramento do workspace que sai e restaura o do que entra —
+        necessário porque cenas com o mesmo sceneRect preservam o transform do
+        view, então sem isso o pan/zoom vazaria de um workspace para outro.
+        """
+        ws = ws or None
+        # _prev antes da troca: ver _swap_scene.
+        self._swap_scene(ws, _prev=self.current_ws)
+        self.current_ws = ws
         self.changed.emit()
+
+    def _swap_scene(self, ws, _save=True, _prev=_CURRENT):
+        """Troca a cena exibida, movendo o pan/zoom de uma para a outra.
+
+        _prev é o workspace que SAI, e é sob a chave DELE que o enquadramento
+        é salvo. Precisa ser explícito: set_current_ws já atribuiu self.current_ws
+        ao workspace novo antes de chegar aqui, então salvar por self.current_ws
+        gravaria o enquadramento de A na chave de B — e A nunca receberia o seu
+        de volta (medido: voltando de B, o zoom era o de B).
+        """
+        if _save and self.gscene is not None:
+            saiu = self.current_ws if _prev is _CURRENT else _prev
+            self._views[_ws_id(saiu)] = self._read_view()
+        self.gscene = self._scene_of(ws)
+        self.setScene(self.gscene)
+        self._restore_view(_ws_id(ws))
+        self._refresh_edges()
+
+    def _read_view(self):
+        """Enquadramento atual como (transform, centro_em_coord_de_cena).
+
+        Guardamos centro+transform, não os valores dos scrollbars: elas estão
+        desligadas (ScrollBarAlwaysOff) e só servem para o panning.
+        """
+        return (QTransform(self.transform()),
+                self.mapToScene(self.viewport().rect().center()))
+
+    def _restore_view(self, key):
+        """Restaura o enquadramento salvo do workspace. Sem estado salvo, a cena
+        entra com o transform que já estava no view — comportamento medido do
+        Qt, e é o que evita um workspace vazio abrir com o zoom do anterior."""
+        st = self._views.get(key)
+        if not st: return
+        t, c = st
+        self.setTransform(t); self.centerOn(c)
+
+    def forget_workspace(self, ws_id):
+        """Descarta cena e enquadramento de um workspace removido.
+
+        Sem isto a cena ficaria em self.scenes para sempre, vazia, segurando
+        o _views. Se a cena removida era a exibida, cai para a primeira que
+        sobrar (ou a sentinel, que é sempre válida).
+        """
+        self._views.pop(ws_id, None)
+        sc = self.scenes.pop(ws_id, None)
+        if sc is None: return
+        if self.gscene is sc:
+            self._swap_scene(None, _save=False)
+            self.setScene(self._scene_of(None))
+        # não destruímos a cena: um QGraphicsScene com proxy vivo destrói o
+        # widget em cascata (medido: crash). Os nós já foram fechados antes,
+        # um a um, por quem removeu o workspace.
+
+    def _drop_point(self, scene):
+        """Onde nasce um nó novo na cena `scene`.
+
+        NÃO pode usar self.mapToScene(): ele é relativo à cena EXIBIDA (medido:
+        com a cena A visível devolve (318,238) para um proxy de B em (1100,1100)
+        — uma posição sem sentido em B). Usamos o centro do conteúdo da cena
+        alvo, que itemsBoundingRect() devolve corretamente mesmo oculta.
+
+        Cena vazia não tem conteúdo: usamos a origem da cena, que é o ponto
+        neutro e previsível para o primeiro nó.
+        """
+        r = scene.itemsBoundingRect()
+        if r.isEmpty(): return QPointF(0, 0)
+        return QPointF(r.center())
+
+    def _tick_edges(self):
+        """Redesenha as setas da cena EXIBIDA a cada 33ms.
+
+        Só as visíveis: as de cenas ocultas não se movem (não são pintadas) e
+        recalculá-las seria trabalho invisível.
+        """
+        sc = self.scene()
+        for e in self.edges:
+            if _item_scene(e) is sc and e.src.proxy and e.dst.proxy: e.refresh()
+
+    def _refresh_edges(self):
+        """Redesenha as setas da cena exibida — chamado na troca de cena, para
+        os nós movidos enquanto estavam ocultos voltarem com a geometria certa."""
+        self._tick_edges()
 
     def drawBackground(self, p, rect):
         p.fillRect(rect, QColor("#0d1117")); g = 32
@@ -202,12 +354,17 @@ class InfiniteCanvas(QGraphicsView):
 
     # --- terminais e conexões -----------------------------------------
     def add_terminal(self, spec, _persist=True):
-        win = FloatingWindow(self, spec); proxy = self.gscene.addWidget(win); win.proxy = proxy
+        win = FloatingWindow(self, spec)
+        # Cena do PRÓPRIO workspace, não a exibida: um terminal restaurado de um
+        # workspace que não está na tela precisa nascer na cena dele (é o que
+        # faz o startup com vários workspaces montar cada um no seu canvas).
+        scene = self._scene_of(win.workspace)
+        proxy = scene.addWidget(win); win.proxy = proxy
         pos = spec.pop("_restored_pos", None); size = spec.pop("_restored_size", None)
         if pos and size:
             proxy.setPos(*pos); win.resize(*size)
         else:
-            c = self.mapToScene(self.viewport().rect().center()); off = 30 * (self._n % 8); self._n += 1
+            c = self._drop_point(scene); off = 30 * (self._n % 8); self._n += 1
             proxy.setPos(c.x() - win.width() / 2 + off, c.y() - win.height() / 2 + off)
         self.windows[win.id] = win
         if _persist: agents.save_one(win)
@@ -217,7 +374,7 @@ class InfiniteCanvas(QGraphicsView):
         for e in [e for e in self.edges if win in (e.src, e.dst)]: self.remove_edge(e)
         agents.remove_one(win.id, win.workspace["id"])
         self.windows.pop(win.id, None)
-        if win.proxy and win.proxy.scene(): self.gscene.removeItem(win.proxy)
+        _out_of(win.proxy)
         self.changed.emit()
 
     def peers_of(self, win): return [e.dst for e in self.edges if e.src is win]
@@ -228,39 +385,65 @@ class InfiniteCanvas(QGraphicsView):
             win.link_btn.setIcon(icon("link-variant", "#101114")); return
         src, self._link_src = self._link_src, None
         src.link_btn.setStyleSheet(BTN); src.link_btn.setIcon(icon("link-variant"))
-        if src is not win and not any(e.src is src and e.dst is win for e in self.edges):
-            e = Edge(self, src, win); self.gscene.addItem(e); self.edges.append(e)
+        if src is win: return
+        # Workspaces são ambientes separados: uma seta entre dois deles não tem
+        # onde ser desenhada (as pontas vivem em cenas diferentes) nem sentido.
+        # Recusamos com aviso — silenciosamente o usuário acharia que a seta
+        # sumiu sozinha.
+        a, b = _ws_id(getattr(src, "workspace", None)), _ws_id(getattr(win, "workspace", None))
+        if a != b:
+            self.notice.emit(f"'{src.name}' e '{win.name}' estão em workspaces diferentes "
+                             f"— a conexão foi recusada.")
+            return
+        if not any(e.src is src and e.dst is win for e in self.edges):
+            # A seta entra na cena do workspace da origem — que é o mesmo dos
+            # dois, já que recusamos pares cross-workspace acima.
+            e = Edge(self, src, win); self._scene_of(src.workspace).addItem(e); self.edges.append(e)
             self._persist_links(src)
 
     def remove_edge(self, e):
         if e in self.edges:
             self.edges.remove(e)
             self._persist_links(e.src)      # recria a lista sem esta seta
-        self.gscene.removeItem(e)
+        _out_of(e)
 
     def _persist_links(self, src):
         """Grava as conexões no workspace da origem da seta.
 
         Terminal↔terminal, terminal↔painel e painel↔painel entram no mesmo arquivo.
         Se a origem não tem workspace, nada é gravado.
+
+        Só entram pares cujas DUAS pontas estão no workspace de origem: uma seta
+        cross-workspace não existe mais (start_link recusa), e exigir as duas
+        pontas faz o arquivo se auto-curar de links antigos gravados antes.
         """
-        ws_id = (getattr(src, "workspace", None) or {}).get("id")
+        ws_id = _ws_id(getattr(src, "workspace", None))
         if not ws_id: return
         layout.save_links(ws_id, [(e.src.id, e.dst.id) for e in self.edges
-                                  if ((getattr(e.src, "workspace", None) or {}).get("id")) == ws_id])
+                                  if _ws_id(getattr(e.src, "workspace", None)) == ws_id
+                                  and _ws_id(getattr(e.dst, "workspace", None)) == ws_id])
 
     # --- painéis web ----------------------------------------------------
     # Import tardio: tayama.browser importa daqui (BTN/ResizeGrip) e o QtWebEngine
     # precisa ser carregado antes do QApplication.
-    def add_panel(self, url="about:blank", name=None, pos=None, size=None, _id=None, _persist=True):
+    def add_panel(self, url="about:blank", name=None, pos=None, size=None, _id=None, _persist=True,
+                  workspace=_CURRENT):
+        """Cria um painel na cena do workspace dado.
+
+        `workspace` tem default sentinela e não None de propósito: None é um valor
+        legítimo ("painel sem workspace, que não persiste" — test_restore_flow
+        cobre isso) e precisa ser distinguível de "não passei nada, usa o corrente".
+        """
         from .browser import BrowserWindow
+        ws = self.current_ws if workspace is _CURRENT else workspace
         win = BrowserWindow(self, url, name, _id)
-        win.workspace = self.current_ws      # None se não houver workspace: aí não persiste
-        proxy = self.gscene.addWidget(win); win.proxy = proxy
+        win.workspace = ws or None            # None se não houver workspace: aí não persiste
+        scene = self._scene_of(win.workspace)  # cena do PRÓPRIO ws, não a exibida
+        proxy = scene.addWidget(win); win.proxy = proxy
         if pos and size:
             proxy.setPos(*pos); win.resize(*size)
         else:
-            c = self.mapToScene(self.viewport().rect().center())
+            c = self._drop_point(scene)
             off = 30 * (self._n % 8); self._n += 1
             proxy.setPos(c.x() - win.width() / 2 + off, c.y() - win.height() / 2 + off)
         self.panels[win.id] = win
@@ -271,7 +454,7 @@ class InfiniteCanvas(QGraphicsView):
         for e in [e for e in self.edges if win in (e.src, e.dst)]: self.remove_edge(e)
         layout.remove_panel(win.id, (getattr(win, "workspace", None) or {}).get("id"))
         self.panels.pop(win.id, None)
-        if win.proxy and win.proxy.scene(): self.gscene.removeItem(win.proxy)
+        _out_of(win.proxy)
         self.changed.emit()
 
     # --- persistência --------------------------------------------------
@@ -331,12 +514,19 @@ class InfiniteCanvas(QGraphicsView):
 
         Uma seta só volta se os dois nós voltarem; nó ausente = descarta em silêncio.
 
-        Com ws_id (materialização de um clone recém-duplicado) o workspace
-        corrente é preservado: o painel nasce no ws clonado, mas duplicar não
-        pode trocar o foco de quem está usando o app.
+        O workspace corrente NÃO é tocado aqui: cada painel nasce com
+        `workspace=ws`, na cena do próprio workspace. Antes o laço chamava
+        set_current_ws() e o finally devolvia o valor (o "hack do previous_ws"),
+        que existia só porque add_panel herdava o ws corrente. Sem isso, o
+        restore materializar um clone não pode mais roubar o foco de quem está
+        usando o app — e a invariante é explícita, não efeito colateral.
+
+        Par com pontas em workspaces diferentes é de dado antigo: connections
+        cross-workspace eram permitidas antes de cada workspace ter a sua cena,
+        e estão possivelmente em links/<ws>.json. Descartamos com log — uma
+        seta entre cenas diferentes não teria onde ser desenhada.
         """
         wss = {w["id"]: w for w in workspaces.load()}
-        previous_ws = self.current_ws
         if ws_id is None:
             panels = layout.load_all_panels()
             links = layout.load_all_links()
@@ -356,10 +546,9 @@ class InfiniteCanvas(QGraphicsView):
                 # add_panel() recriaria o BrowserWindow, sobrescreveria
                 # canvas.panels[id] e deixaria o painel antigo órfão na cena.
                 if spec.get("id") in self.panels: continue
-                self.set_current_ws(ws)      # o painel nasce no seu próprio workspace
                 self.add_panel(spec.get("url") or "about:blank", name=spec.get("name"),
                                pos=(spec["x"], spec["y"]), size=(spec["w"], spec["h"]),
-                               _id=spec.get("id"), _persist=False)
+                               _id=spec.get("id"), _persist=False, workspace=ws)
             for w_id, (src_id, dst_id) in links:
                 nodes = self._nodes_by_id(); src, dst = nodes.get(src_id), nodes.get(dst_id)
                 if src is None or dst is None: continue     # nó não voltou: descarta em silêncio
@@ -367,10 +556,15 @@ class InfiniteCanvas(QGraphicsView):
                 # é um objeto novo, e a comparação por identidade deixaria passar
                 # a seta antiga — duplicando a conexão no canvas.
                 if src_id == dst_id or any(e.src.id == src_id and e.dst.id == dst_id for e in self.edges): continue
-                e = Edge(self, src, dst); self.gscene.addItem(e); self.edges.append(e)
+                # conexão cross-workspace: dado antigo, de antes de cada workspace
+                # ter a sua própria cena. Descarta em vez de criar uma seta cujas
+                # pontas vivem em cenas diferentes.
+                if _ws_id(getattr(src, "workspace", None)) != _ws_id(getattr(dst, "workspace", None)):
+                    print(f"Tayama: conexão {src.name} → {dst.name} ignorada — "
+                          f"workspaces diferentes (dado antigo)")
+                    continue
+                e = Edge(self, src, dst); self._scene_of(src.workspace).addItem(e); self.edges.append(e)
         finally:
-            if ws_id is not None:
-                self.current_ws = previous_ws      # duplicar não troca o workspace corrente
             self.blockSignals(False)
             self.changed.emit()
 

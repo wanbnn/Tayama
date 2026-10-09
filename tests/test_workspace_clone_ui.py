@@ -103,23 +103,61 @@ def config_com_agente(home):
     return cfg
 
 
-@pytest.fixture
-def canvas(qapp, home, config_com_agente):
-    """InfiniteCanvas de verdade (QApplication offscreen + QtWebEngine).
+def _drain(qapp, n=5):
+    """Processa a fila de eventos E a de deleteLater.
 
-    O teardown exitado de proposito: o canvas liga um QTimer de 33ms que chama
-    Edge.refresh() em todas as setas. Se ele continuar rodando durante o
-    processEvents() do teardown, ele toca em proxy/widget ja em destruicao e o
-    processo inteiro estoura em SIGSEGV (o mesmo estrago acontece em
-    tests/test_restore_flow.py neste ambiente). Ordem: para o timer, mata o PTY,
-    tira as setas da cena e só entao processa os eventos.
+    processEvents() sozinho nao processa DeferredDelete: os widgets marcados
+    com deleteLater() continuam vivos ate o proximo nivel do event loop, e e
+    ai que o QtWebEngine destrói QQuickWidget dentro de sendPostedEvents.
+    """
+    from PyQt6.QtCore import QCoreApplication, QEvent
+    for _ in range(n):
+        qapp.processEvents()
+        QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+
+
+def _tirar_da_cena(item):
+    """Remove o item da cena DELE — nao da cena exibida.
+
+    QGraphicsScene.removeItem() numa cena errada e NO-OP SILENCIOSO (medido no
+    Qt 6.11: so um qWarning, o item continua preso). Como o canvas agora tem UMA
+    CENA POR WORKSPACE, usar c.gscene deixaria os nos dos workspaces nao
+    exibidos grudados na cena — e um BrowserWindow preso e o que derruba o
+    processo (v. o docstring de _fechar).
+    """
+    sc = item.scene() if item is not None else None
+    if sc is not None:
+        sc.removeItem(item)
+
+
+def _fechar(c, qapp):
+    """Fecha um canvas sem derrubar o processo.
+
+    ACHADO DO TESTER (suite nao chegava a um veredicto): o crash nao era so o
+    QTimer de Edge.refresh() — faltava o BrowserWindow. Este cenario traz
+    painel web, e um painel e um QWebEngineView: destruido dentro do
+    processEvents() do teardown, ele desce QQuickWidget/~QQuickWindow ->
+    QQuickRenderControlPrivate::windowDestroyed e o processo morre em SIGSEGV,
+    DEPOIS do pytest imprimir o resumo. Era resultado truncado: '5 passed'
+    com o core dump logo em seguida.
+
+    Ordem obrigatoria (medida, nao deduzida):
+      1. para o timer de 33ms das setas;
+      2. mata o PTY dos terminais;
+      3. tira as setas da cena;
+      4. tira cada BrowserWindow da cena + deleteLater;
+      5. DRAINA os deleteLater e so entao fecha o canvas.
+
+    Os passos 3 e 4 tiram cada item da SUA cena (_tirar_da_cena): o canvas tem
+    uma cena por workspace, entao remover de c.gscene seria no-op silencioso
+    para tudo que nao estivesse no workspace exibido.
+
+    Nao matar a QWebEnginePage na mao (page.deleteLater()): o QWebEngineView
+    continua emitindo loadFinished de um load em voo e aborta em qt_assert, e
+    sobra QSocketNotifier orfao do Chromium. Deixar o BrowserWindow levar a
+    page junto resolve, sem o aviso 'WebEnginePage still not deleted'.
     """
     from PyQt6.QtCore import QTimer
-    from tayama.ui import InfiniteCanvas
-    c = InfiniteCanvas()
-    c.resize(1200, 800)
-    yield c
-
     for tmr in c.findChildren(QTimer):
         tmr.stop()
     for win in list(c.windows.values()):
@@ -128,11 +166,33 @@ def canvas(qapp, home, config_com_agente):
         except Exception:
             pass
     for e in list(c.edges):
-        c.gscene.removeItem(e)
+        _tirar_da_cena(e)
     c.edges.clear()
+    for pan in list(c.panels.values()):
+        try:
+            _tirar_da_cena(pan.proxy)
+            pan.proxy = None
+            pan.deleteLater()
+        except RuntimeError:
+            pass          # painel ja destruido: nada a fazer
+    for win in list(c.windows.values()):
+        _tirar_da_cena(win.proxy)
+        win.proxy = None
+    c.panels.clear()
+    _drain(qapp)
     c.close()
     c.deleteLater()
-    qapp.processEvents()
+    _drain(qapp)
+
+
+@pytest.fixture
+def canvas(qapp, home, config_com_agente):
+    """InfiniteCanvas de verdade (QApplication offscreen + QtWebEngine)."""
+    from tayama.ui import InfiniteCanvas
+    c = InfiniteCanvas()
+    c.resize(1200, 800)
+    yield c
+    _fechar(c, qapp)
 
 
 def _spec_terminal(ws, name="alfa", pid="term-orig"):
