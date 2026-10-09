@@ -1,12 +1,12 @@
-"""Configuração persistente em ~/.agentdeck (agentes, cargos, skills)."""
+"""Configuração persistente em ~/.tayama (agentes, cargos, skills)."""
 import json, os
 from pathlib import Path
 
-DIR = Path(os.environ.get("AGENTDECK_HOME", Path.home() / ".agentdeck"))
+DIR = Path(os.environ.get("TAYAMA_HOME", Path.home() / ".tayama"))
 CFG = DIR / "config.json"
 SKILLS = DIR / "skills"          # cada .md aqui vira uma skill automaticamente
 BIN = str(Path(__file__).resolve().parent.parent / "bin")
-SOCK = f"/tmp/agentdeck-{os.getuid()}.sock" if hasattr(os, "getuid") else ""
+SOCK = f"/tmp/tayama-{os.getuid()}.sock" if hasattr(os, "getuid") else ""
 
 DEFAULT = {
     "agents": [
@@ -17,7 +17,7 @@ DEFAULT = {
     ],
     "roles": [
         {"name": "Líder", "color": "#e5a400",
-         "prompt": "Você coordena a equipe. Quebre o objetivo em tarefas pequenas, delegue aos terminais conectados com `agentdeck send`, acompanhe o progresso, revise entregas e consolide o resultado. Evite programar você mesmo."},
+         "prompt": "Você coordena a equipe. Quebre o objetivo em tarefas pequenas, delegue aos terminais conectados com `tayama send`, acompanhe o progresso, revise entregas e consolide o resultado. Evite programar você mesmo."},
         {"name": "Desenvolvedor", "color": "#2f9e44",
          "prompt": "Você implementa as tarefas recebidas com código limpo e commits pequenos. Ao terminar, avise quem pediu (e o tester, se conectado) dizendo o que mudou e como testar."},
         {"name": "Tester", "color": "#d6336c",
@@ -38,7 +38,7 @@ def ensure():
     if not CFG.exists():
         CFG.write_text(json.dumps(DEFAULT, indent=2, ensure_ascii=False), "utf-8")
     try:
-        os.chmod(Path(BIN) / "agentdeck", 0o755)
+        os.chmod(Path(BIN) / "tayama", 0o755)
     except OSError:
         pass
 

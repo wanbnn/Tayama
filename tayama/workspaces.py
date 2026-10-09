@@ -1,4 +1,4 @@
-"""Workspaces persistidos em ~/.agentdeck/workspaces.json: {id, name, path}."""
+"""Workspaces persistidos em ~/.tayama/workspaces.json: {id, name, path}."""
 import json, uuid
 from . import config
 

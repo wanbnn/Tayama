@@ -63,8 +63,8 @@ class FloatingWindow(QFrame):
             if ic == "link-variant": self.link_btn = b
         lay.addWidget(bar)
 
-        env = dict(os.environ, TERM="xterm-256color", COLORTERM="truecolor", AGENTDECK_ID=self.id,
-                   AGENTDECK_NAME=self.name, AGENTDECK_ROLE=self.role_name, AGENTDECK_SOCK=config.SOCK,
+        env = dict(os.environ, TERM="xterm-256color", COLORTERM="truecolor", TAYAMA_ID=self.id,
+                   TAYAMA_NAME=self.name, TAYAMA_ROLE=self.role_name, TAYAMA_SOCK=config.SOCK,
                    PATH=config.BIN + os.pathsep + os.environ.get("PATH", ""))
         os.environ["SHELL"] = os.environ.get("SHELL") or "/bin/bash"
         qenv, qargs = trust.quiet(self.agent) if self.agent.get("no_update_prompts", True) else ({}, [])
@@ -77,7 +77,7 @@ class FloatingWindow(QFrame):
             argv = [os.path.expandvars(self.agent["command"])] + args
         if self.agent.get("auto_trust", True):
             try: trust.ensure(self.agent, self.cwd)
-            except Exception as e: print("AgentDeck: não foi possível pré-aprovar a pasta:", e)
+            except Exception as e: print("Tayama: não foi possível pré-aprovar a pasta:", e)
         self.terminal = PtyTerminal(argv, self.cwd, env, self)
         self.terminal.finished.connect(self._ended)
         lay.addWidget(self.terminal)
@@ -110,14 +110,14 @@ class FloatingWindow(QFrame):
     # --- comunicação ---------------------------------------------------
     def briefing(self) -> str:
         peers = self.canvas.peers_of(self)
-        out = [f'Você é "{self.name}", cargo "{self.role_name}", em uma equipe de agentes CLI coordenada pelo AgentDeck.']
+        out = [f'Você é "{self.name}", cargo "{self.role_name}", em uma equipe de agentes CLI coordenada pelo Tayama.']
         if self.role: out.append(self.role["prompt"])
         if self.skills:
             out.append("## Skills")
             out += [f"### {s['name']}\n{s['text']}" for s in self.skills]
         out.append('## Comunicação\nUse estes comandos de shell para falar com os terminais conectados a você:\n'
-                   '- agentdeck peers\n- agentdeck send <nome-ou-cargo> "mensagem"\n- agentdeck broadcast "mensagem"\n'
-                   'Mensagens recebidas chegam no seu input no formato "[AgentDeck de <nome> (<cargo>)] texto".')
+                   '- tayama peers\n- tayama send <nome-ou-cargo> "mensagem"\n- tayama broadcast "mensagem"\n'
+                   'Mensagens recebidas chegam no seu input no formato "[Tayama de <nome> (<cargo>)] texto".')
         out.append("Conectados agora: " + (", ".join(f"{p.name} ({p.role_name})" for p in peers) or "ninguém ainda") + ".")
         out.append("Confirme em uma linha que entendeu e aguarde instruções.")
         return "\n\n".join(out)
@@ -125,7 +125,7 @@ class FloatingWindow(QFrame):
     def send_briefing(self): self.terminal.send_text(self.briefing())
 
     def receive(self, src, text):
-        self.terminal.send_text(f"[AgentDeck de {src.name} ({src.role_name})] {text}")
+        self.terminal.send_text(f"[Tayama de {src.name} ({src.role_name})] {text}")
 
     def close_window(self):
         self.terminal.terminate(); self.canvas.remove_window(self); self.deleteLater()
