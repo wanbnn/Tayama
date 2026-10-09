@@ -34,6 +34,7 @@ class BrowserWindow(QFrame):
         self.role = {"name": "painel web", "color": COLOR}
         self.role_name = "painel web"
         self.agent = {"name": "Chromium"}
+        self.workspace = None      # definido por InfiniteCanvas.add_panel
         self.proxy = None; self._drag = None
         self.last_message = ""
         self.state = OK          # ok | loading | crashed — lido pela API HTTP (parte 2)
@@ -135,6 +136,7 @@ class BrowserWindow(QFrame):
         """loadFinished(ok=False) costuma ser só erro de rede; crashed é outro caso."""
         if self.state != CRASHED: self.state = OK
         self._loading(None)
+        if self.workspace: self.canvas._persist_window(self)   # grava url/título navegados
 
     def _crashed(self):
         self.state = CRASHED
@@ -187,7 +189,10 @@ class BrowserWindow(QFrame):
             self.proxy.setPos(self._start + QPointF(d.x(), d.y())); e.accept()
 
     def _tr(self, e):
-        self._drag = None; e.accept()
+        # mesmo padrão da FloatingWindow: soltar o mouse grava posição/tamanho
+        self._drag = None
+        if self.proxy: self.canvas._persist_window(self)
+        e.accept()
 
     # --- interface com a Bridge ----------------------------------------
     def receive(self, src, text):

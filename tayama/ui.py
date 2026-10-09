@@ -6,7 +6,7 @@ from PyQt6.QtWidgets import (
     QGraphicsView, QGraphicsScene, QGraphicsPathItem, QFrame, QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QPushButton, QMenu, QDialog, QFormLayout, QLineEdit, QComboBox, QListWidget,
     QListWidgetItem, QDialogButtonBox, QFileDialog, QPlainTextEdit, QMessageBox)
-from . import agents, config, trust, workspaces
+from . import agents, config, layout, trust, workspaces
 from .icons import icon, style_button
 from .terminal import PtyTerminal
 
@@ -172,7 +172,16 @@ class InfiniteCanvas(QGraphicsView):
         self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.windows, self.edges, self.panels = {}, [], {}
         self._link_src = None; self._panning = False; self._space = False; self._n = 0
+        # Workspace corrente: onde nascem os painéis. Padrão = último da lista,
+        # ou None se não houver nenhum (painel ainda funciona, só não persiste).
+        wss = workspaces.load()
+        self.current_ws = wss[-1] if wss else None
         t = QTimer(self, interval=33); t.timeout.connect(lambda: [e.refresh() for e in self.edges]); t.start()
+
+    def set_current_ws(self, ws):
+        """Define o workspace corrente (painéis novos nascem aqui)."""
+        self.current_ws = ws or None
+        self.changed.emit()
 
     def drawBackground(self, p, rect):
         p.fillRect(rect, QColor("#0d1117")); g = 32
@@ -210,34 +219,64 @@ class InfiniteCanvas(QGraphicsView):
         src.link_btn.setStyleSheet(BTN); src.link_btn.setIcon(icon("link-variant"))
         if src is not win and not any(e.src is src and e.dst is win for e in self.edges):
             e = Edge(self, src, win); self.gscene.addItem(e); self.edges.append(e)
+            self._persist_links(src)
 
     def remove_edge(self, e):
-        if e in self.edges: self.edges.remove(e)
+        if e in self.edges:
+            self.edges.remove(e)
+            self._persist_links(e.src)      # recria a lista sem esta seta
         self.gscene.removeItem(e)
+
+    def _persist_links(self, src):
+        """Grava as conexões no workspace da origem da seta.
+
+        Terminal↔terminal, terminal↔painel e painel↔painel entram no mesmo arquivo.
+        Se a origem não tem workspace, nada é gravado.
+        """
+        ws_id = (getattr(src, "workspace", None) or {}).get("id")
+        if not ws_id: return
+        layout.save_links(ws_id, [(e.src.id, e.dst.id) for e in self.edges
+                                  if ((getattr(e.src, "workspace", None) or {}).get("id")) == ws_id])
 
     # --- painéis web ----------------------------------------------------
     # Import tardio: tayama.browser importa daqui (BTN/ResizeGrip) e o QtWebEngine
     # precisa ser carregado antes do QApplication.
-    def add_panel(self, url="about:blank"):
+    def add_panel(self, url="about:blank", name=None, pos=None, size=None, _persist=True):
         from .browser import BrowserWindow
-        win = BrowserWindow(self, url)
+        win = BrowserWindow(self, url, name)
+        win.workspace = self.current_ws      # None se não houver workspace: aí não persiste
         proxy = self.gscene.addWidget(win); win.proxy = proxy
-        c = self.mapToScene(self.viewport().rect().center())
-        off = 30 * (self._n % 8); self._n += 1
-        proxy.setPos(c.x() - win.width() / 2 + off, c.y() - win.height() / 2 + off)
+        if pos and size:
+            proxy.setPos(*pos); win.resize(*size)
+        else:
+            c = self.mapToScene(self.viewport().rect().center())
+            off = 30 * (self._n % 8); self._n += 1
+            proxy.setPos(c.x() - win.width() / 2 + off, c.y() - win.height() / 2 + off)
         self.panels[win.id] = win
+        if _persist: layout.save_panel(win)
         self.changed.emit(); return win
 
     def remove_panel(self, win):
         for e in [e for e in self.edges if win in (e.src, e.dst)]: self.remove_edge(e)
+        layout.remove_panel(win.id, (getattr(win, "workspace", None) or {}).get("id"))
         self.panels.pop(win.id, None)
         if win.proxy and win.proxy.scene(): self.gscene.removeItem(win.proxy)
         self.changed.emit()
 
     # --- persistência --------------------------------------------------
     def _persist_window(self, win):
-        # painéis não são terminais: não têm workspace e não vão para o disco
-        if getattr(win, "workspace", None): agents.save_one(win)
+        """Grava posição/tamanho após drag ou resize.
+
+        Terminais vão para agents.py; painéis vão para layout.py.
+        Sem workspace não há para qual arquivo gravar — degrada sem crash.
+        """
+        if not getattr(win, "workspace", None): return
+        if win in self.panels.values(): layout.save_panel(win)
+        else: agents.save_one(win)
+
+    def _nodes_by_id(self):
+        """Todos os nós do canvas (terminais + painéis) indexados por id."""
+        return {**self.windows, **self.panels}
 
     def restore_agents(self):
         cfg = config.load()
@@ -258,6 +297,31 @@ class InfiniteCanvas(QGraphicsView):
                     "cwd": ws["path"], "skills": skills,
                     "_restored_pos": (e["x"], e["y"]), "_restored_size": (e["w"], e["h"]),
                 }, _persist=False)
+        finally:
+            self.blockSignals(False)
+            self.changed.emit()
+
+    def restore_panels(self):
+        """Restaura os painéis e as conexões de todos os workspaces.
+
+        Uma seta só volta se os dois nós voltarem; nó ausente = descarta em silêncio.
+        """
+        wss = {w["id"]: w for w in workspaces.load()}
+        self.blockSignals(True)
+        try:
+            for ws_id, spec in layout.load_all_panels():
+                ws = wss.get(ws_id)
+                if not ws:
+                    print(f"Tayama: painel '{spec.get('name')}' ignorado — workspace removido"); continue
+                self.set_current_ws(ws)      # o painel nasce no seu próprio workspace
+                self.add_panel(spec.get("url") or "about:blank", name=spec.get("name"),
+                               pos=(spec["x"], spec["y"]), size=(spec["w"], spec["h"]),
+                               _persist=False)
+            for ws_id, (src_id, dst_id) in layout.load_all_links():
+                nodes = self._nodes_by_id(); src, dst = nodes.get(src_id), nodes.get(dst_id)
+                if src is None or dst is None: continue     # nó não voltou: descarta em silêncio
+                if src is dst or any(e.src is src and e.dst is dst for e in self.edges): continue
+                e = Edge(self, src, dst); self.gscene.addItem(e); self.edges.append(e)
         finally:
             self.blockSignals(False)
             self.changed.emit()

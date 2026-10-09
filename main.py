@@ -54,6 +54,7 @@ class MainWindow(QMainWindow):
         self._rail_icon()
         self.bridge = Bridge(self.canvas)
         self.canvas.restore_agents()
+        self.canvas.restore_panels()
 
         tb = QToolBar("Workspace")
         tb.setObjectName("mainToolbar")
@@ -99,7 +100,8 @@ class MainWindow(QMainWindow):
     def new_workspace(self):
         d = WorkspaceDialog(self)
         if d.exec():
-            workspaces.add(*d.value())
+            ws = workspaces.add(*d.value())
+            self.canvas.set_current_ws(ws)      # painéis futuros nascem aqui
             self.sidebar.refresh()
             return True
         return False
@@ -112,7 +114,9 @@ class MainWindow(QMainWindow):
             wss = workspaces.load()
         d = NewTerminalDialog(config.load(), wss, ws["id"] if isinstance(ws, dict) else None, self)
         if d.exec():
-            self.canvas.add_terminal(d.spec())
+            spec = d.spec()
+            self.canvas.set_current_ws(spec["workspace"])
+            self.canvas.add_terminal(spec)
 
     def new_panel(self):
         self.canvas.add_panel("about:blank")

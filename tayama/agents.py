@@ -13,8 +13,11 @@ def _file(workspace_id):
 
 
 def _read(workspace_id):
-    try: return json.loads(_file(workspace_id).read_text("utf-8"))
+    # JSON válido mas de outro tipo ('null', '42') volta como lista vazia —
+    # save_one/remove_one assumem lista, e um int aqui estouraria em len()/iteração.
+    try: data = json.loads(_file(workspace_id).read_text("utf-8"))
     except (OSError, ValueError): return []
+    return data if isinstance(data, list) else []
 
 
 def _write(workspace_id, entries):
@@ -29,8 +32,9 @@ def load_all():
     """Todos os agentes de todos os workspaces (para restauração no startup)."""
     out = []
     for f in sorted(_dir().glob("*.json")):
-        try: out += json.loads(f.read_text("utf-8"))
+        try: data = json.loads(f.read_text("utf-8"))
         except (OSError, ValueError): continue
+        if isinstance(data, list): out += data
     return out
 
 

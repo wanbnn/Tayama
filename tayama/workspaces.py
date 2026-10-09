@@ -22,5 +22,6 @@ def add(name, path):
 
 def remove(wid):
     save([w for w in load() if w["id"] != wid])
-    from . import agents
+    from . import agents, layout
     agents.remove_workspace(wid)
+    layout.remove_workspace(wid)      # painéis e conexões daquele workspace
