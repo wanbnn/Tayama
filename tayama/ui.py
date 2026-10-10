@@ -135,9 +135,45 @@ class FloatingWindow(QFrame):
         out.append('## Comunicação\nUse estes comandos de shell para falar com os terminais conectados a você:\n'
                    '- tayama peers\n- tayama send <nome-ou-cargo> "mensagem"\n- tayama broadcast "mensagem"\n'
                    'Mensagens recebidas chegam no seu input no formato "[Tayama de <nome> (<cargo>)] texto".')
+        paineis = [p for p in peers if p.id in self.canvas.panels]
+        if paineis:
+            out.append(self._briefing_paineis(paineis))
         out.append("Conectados agora: " + (", ".join(f"{p.name} ({p.role_name})" for p in peers) or "ninguém ainda") + ".")
         out.append("Confirme em uma linha que entendeu e aguarde instruções.")
         return "\n\n".join(out)
+
+    def _briefing_paineis(self, paineis) -> str:
+        """Seção "Painéis web". Condicional de propósito, como as outras: só
+        entra se houver painel ligado a este terminal — um agente sem painel não
+        deve ler um manual de browser que não pode usar.
+
+        O texto antecipa três erros que o agente cometeria de outro modo:
+        escolher `eval` no lugar de `page`, esquecer `--panel` com mais de um
+        painel, e achar que `type` é digitação real (é evento sintético).
+        """
+        nomes = ", ".join(p.name for p in paineis)
+        return (
+            "## Painéis web\n"
+            f"Você tem {len(paineis)} painel(es) ligado(s) por seta: {nomes}. "
+            "Eles aparecem em `tayama peers` como (painel web, Chromium). "
+            "Para mais, peça ao Tayama para abrir um ou para ligar outro pela seta.\n\n"
+            "- tayama panel list — todos os painéis, com id, url e estado\n"
+            "- tayama panel open <url> --name N — abre um painel novo e devolve o id\n"
+            "- tayama panel navigate <url> — só http:// e https:// (file:// é recusado)\n"
+            "- tayama panel back | forward | reload\n"
+            "- tayama panel page — texto da página atual; --full traz o HTML\n"
+            "- tayama panel links — links com href resolvido e o atributo cru\n"
+            "- tayama panel click <seletor> — ex.: '#enviar', 'button[type=submit]'\n"
+            "- tayama panel type <seletor> <texto> — digita num campo; --append concatena\n"
+            "- tayama panel press <tecla> — Enter, Tab, Escape, ArrowDown…\n"
+            "- tayama panel eval \"<js>\" — roda JS e devolve o valor\n\n"
+            "Sem --panel o comando age no painel ligado a você; havendo mais de um, "
+            "o erro lista os ids. Prefira page/links/click/type/press — cobrem o caso "
+            "comum. Use eval quando precisar do texto já renderizado, que page não traz: "
+            "`eval \"document.body.innerText\"`. Atenção: mouse e teclado aqui são "
+            "eventos sintéticos de JavaScript, então prefira os comandos acima a simular "
+            "coisas no eval. E o eval alcança a sessão da página aberta no painel: "
+            "não é isolado do que o usuário está logado.")
 
     def send_briefing(self): self.terminal.send_text(self.briefing())
 

@@ -5,7 +5,7 @@ que o pacote seja importado *antes* da criação do QApplication, senão
 `QWebEngineView` falha com "must be imported or Qt.AA_ShareOpenGLContexts
 must be set before a QCoreApplication instance is created".
 """
-import uuid
+import json, uuid
 from PyQt6.QtCore import Qt, QPointF, QUrl, QTimer
 from PyQt6.QtGui import QColor
 from PyQt6.QtWidgets import QFrame, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QLineEdit
@@ -41,6 +41,7 @@ class BrowserWindow(QFrame):
         self.proxy = None; self._drag = None
         self.last_message = ""
         self.state = OK          # ok | loading | crashed — lido pela API HTTP (parte 2)
+        self._js_timer = None    # watchdog de run_js; ver run_js()
 
         self.setObjectName("panel")
         self.setMinimumSize(420, 280); self.resize(760, 520)
@@ -202,6 +203,89 @@ class BrowserWindow(QFrame):
         """Painéis não são terminais: guarda a mensagem e a mostra no rodapé."""
         self.last_message = f"[Tayama de {src.name}] {text}"
         self.update_status()
+
+    # --- API do agente (ver tayama/panelapi.py) ------------------------
+    def run_js(self, js, on_value):
+        """Manda JS ao renderer e responde no callback. NUNCA bloqueia.
+
+        Devolve via `on_value(env)` exatamente uma vez, com um dos dois:
+          {"ok": True, "value": ...}  ou  {"ok": False, "error": "..."}
+
+        Três defesas que só podem existir aqui, porque esta é a fronteira com
+        o Chromium:
+          * watchdog — um JS travado (`while(true){}`) nunca chamaria o
+            callback, e o agente ficaria pendurado no socket para sempre;
+          * guarda de RuntimeError — o painel pode ter sido fechado entre o
+            despacho e o callback, e a página destruída lança ao responder;
+          * `self.state == CRASHED` — o renderer caiu e não vai responder.
+        """
+        from . import panelapi
+
+        respondeu = []
+
+        def _entrega(env):
+            if respondeu:
+                return                      # watchdog já respondeu, ou callback repetido
+            respondeu.append(True)
+            if self._js_timer is not None:
+                self._js_timer.stop()
+                self._js_timer = None
+            on_value(env)
+
+        def _cb(raw):
+            # MEDIDO contra um QWebEngineView de verdade: o tipo do retorno
+            # depende do que o JS devolve, não do que a gente pediu.
+            #   * o envelope do agente termina em JSON.stringify -> chega str;
+            #   * os gadgets devolvem um objeto JS -> o Qt converte e chega
+            #     dict/list Python JÁ parseado.
+            # Fazer json.loads nos dois quebra o segundo caso (TypeError), e foi
+            # exatamente o que o teste ponta a ponta pegou.
+            if isinstance(raw, (dict, list)):
+                env = raw
+            elif isinstance(raw, str):
+                try:
+                    env = json.loads(raw) if raw else {"ok": False, "error": "resposta vazia do painel"}
+                except ValueError:
+                    env = {"ok": False, "error": f"resposta ilegível do painel: {raw[:120]}"}
+            elif raw is None:
+                env = {"ok": False, "error": "resposta vazia do painel"}
+            else:
+                env = {"ok": False, "error": f"resposta inesperada do painel: {str(raw)[:120]}"}
+            _entrega(env)
+
+        def _guarda():
+            self._js_timer = None
+            _entrega({"ok": False, "error": "painel não respondeu a tempo (renderer ocupado?)"})
+
+        try:
+            if self.state == CRASHED:
+                _entrega({"ok": False, "error": "renderizador do painel caiu; feche e reabra o painel"})
+                return
+            self.page.runJavaScript(js, _cb)
+        except RuntimeError as e:
+            # Painel fechado no meio do caminho: a página já não existe.
+            _entrega({"ok": False, "error": f"painel indisponível: {e}"})
+            return
+        self._js_timer = QTimer(self)
+        self._js_timer.setSingleShot(True)
+        self._js_timer.timeout.connect(_guarda)
+        self._js_timer.start(panelapi.JS_TIMEOUT_MS)
+
+    def navigate_api(self, url):
+        """Navegação pedida pelo agente — NÃO reusa `_normalize`.
+
+        `_normalize` (browser.py:164) aceita `file:` de propósito, porque quem
+        opera a barra de endereco é o usuário. A API do agente passa pela
+        allowlist de scheme do panelapi; sem ela, `navigate file:///...` + `page`
+        leria o disco do usuário.
+        """
+        from . import panelapi
+        ok, err = panelapi.check_url(url)
+        if not ok:
+            return {"ok": False, "error": err}
+        self.url.setText(ok)
+        self._go()
+        return {"ok": True, "url": ok}
 
     def close_panel(self):
         # nada fica no disco: limpa cookies e cache do perfil antes de fechar

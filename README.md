@@ -25,8 +25,32 @@ em terminais PTY reais, com **cargos**, **skills** e **conexões** entre termina
        tayama broadcast "mensagem"
    A mensagem aparece no input do destino como `[tayama de <nome> (<cargo>)] ...`.
    O `broadcast` alcança **todos os terminais do workspace que está na tela** — nada atravessa a fronteira entre workspaces.
-6. **Agentes/Cargos/Skills** edita agentes/cargos/skills (JSON em `~/.tayama/config.json`). Todo `.md` em
+6. **Painéis web.** Um painel é uma janela de Chromium no canvas. Para um agente controlá-lo, ligue o
+   terminal ao painel **pela seta** (ícone de link nos dois) — é a seta que autoriza. O painel passa a
+   aparecer em `tayama peers` como `(painel web, Chromium)`, e o agente ganha:
+       tayama panel list                       painéis com id, url e estado
+       tayama panel open <url> [--name N]      abre um painel e devolve o id
+       tayama panel navigate <url>             só http:// e https://
+       tayama panel back | forward | reload
+       tayama panel page [--full]              texto da página; --full traz o HTML
+       tayama panel links                     links com href resolvido e atributo cru
+       tayama panel click <seletor>            ex.: '#enviar'
+       tayama panel type <seletor> <texto>     [--append] concatena
+       tayama panel press <tecla>             Enter, Tab, Escape…
+       tayama panel eval "<js>"                roda JS e devolve o valor
+   Sem `--panel` o comando age no painel ligado a você; havendo mais de um, o erro lista os ids.
+   O briefing que o agente recebe no startup já traz essa lista — e só a traz se houver painel ligado.
+7. **Agentes/Cargos/Skills** edita agentes/cargos/skills (JSON em `~/.tayama/config.json`). Todo `.md` em
    `~/.tayama/skills/` vira uma skill. Crie quantos cargos quiser (nome, cor, prompt).
+
+### Sobre o socket
+
+O `tayama` fala com o app por um socket Unix em `/tmp/tayama-<uid>.sock`, sem token. **Qualquer processo
+do mesmo usuário já consegue falar com ele** — é a mesma garantia do `send`/`broadcast`, não uma porta nova.
+O que muda é que `panel eval` dá poder real: ele roda JS na página aberta, então alcança a sessão em que
+o usuário estiver logado naquele painel. Cada painel tem um perfil off-the-record (sem cookie nem cache em
+disco, `browser.py`), e `navigate`/`open` só aceitam `http://` e `https://` — mas se isso não for
+aceitável no seu ambiente, não exponha o app a agentes não confiáveis.
 
 ## Atalhos
 Ctrl+scroll: zoom · botão do meio ou Espaço+arrastar: mover a tela · Ctrl+Shift+C/V: copiar/colar no terminal.
@@ -38,7 +62,9 @@ Clique simples no workspace na sidebar: trocar de canvas · duplo clique: ir at�
     tayama/terminal.py   PTY + emulação (pyte)
     tayama/ui.py         janelas, setas, canvas (uma cena por workspace), diálogos
     tayama/sidebar.py    árvore de workspaces, troca de canvas
-    tayama/bridge.py     servidor local de mensagens
+    tayama/browser.py    painel web (Chromium embarcado)
+    tayama/panelapi.py   API de painel: allowlist de URL, envelope JS, gadgets de DOM
+    tayama/bridge.py     servidor local de mensagens e de controle de painéis
     bin/tayama           CLI usada pelos agentes
 
 ## Comando não encontrado?

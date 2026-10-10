@@ -3,31 +3,173 @@
   tayama peers
   tayama send <nome-ou-cargo> "mensagem"
   tayama broadcast "mensagem"
+  tayama panel list
+  tayama panel open [url] [--name N]
+  tayama panel close [--panel ID]
+  tayama panel navigate <url> [--panel ID]
+  tayama panel back|forward|reload [--panel ID]
+  tayama panel page [--panel ID] [--full]
+  tayama panel links [--panel ID]
+  tayama panel click <seletor> [--panel ID]
+  tayama panel type <seletor> <texto> [--append] [--panel ID]
+  tayama panel press <tecla> [--panel ID]
+  tayama panel eval "<js>" [--panel ID]
 """
 import json, os, socket, sys
 
+USO = __doc__
+
+# Ops de painel que aceitam --panel. list/open são os dois que não: list não
+# tem alvo, e open cria o painel (o alvo é o que ele devolve).
+OPS_ALVO = ("close", "navigate", "back", "forward", "reload", "page",
+            "links", "click", "type", "press", "eval")
+OPS = ("list", "open", "close", "navigate", "back", "forward", "reload",
+       "page", "links", "click", "type", "press", "eval")
+# Flags booleanas aceitas por op: sem argumento depois delas.
+FLAGS = {"--panel": False, "--full": True, "--append": True, "--name": False}
+
+
+def painel(argv):
+    """Monta o request de `tayama panel <op> ...`. Devolve (req, None) ou (None, msg)."""
+    if not argv:
+        return None, "uso: tayama panel <%s> [args]" % "|".join(OPS)
+    op, resto = argv[0], list(argv[1:])
+    if op not in OPS:
+        return None, "op desconhecida: %s (use %s)" % (op, "|".join(OPS))
+
+    req = {"cmd": "panel", "op": op}
+    pos, alvo = [], None
+    while resto:
+        a = resto.pop(0)
+        if not a.startswith("--"):
+            pos.append(a); continue
+        if a not in FLAGS:
+            return None, "opção desconhecida: %s" % a
+        if FLAGS[a]:
+            req[a[2:]] = True                      # --full / --append: booleanas
+            continue
+        if not resto:
+            return None, "%s exige um valor" % a
+        val = resto.pop(0)
+        if a == "--panel":
+            alvo = val
+        else:                                      # --name
+            req["name"] = val
+
+    if alvo is not None:
+        if op not in OPS_ALVO:
+            return None, "%s não aceita --panel" % op
+        req["panel"] = alvo
+
+    # Preenchimento por op. Os posicionais sao lidos daqui para ca; erro aqui e
+    # erro de uso (codigo 2), nao resposta do Tayama.
+    if op == "navigate":
+        if len(pos) != 1:
+            return None, "navigate exige <url>"
+        req["url"] = pos[0]
+    elif op == "click":
+        if len(pos) != 1:
+            return None, "click exige <seletor>"
+        req["selector"] = pos[0]
+    elif op == "type":
+        if len(pos) != 2:
+            return None, 'type exige <seletor> <texto>'
+        req["selector"], req["text"] = pos[0], pos[1]
+    elif op == "press":
+        if len(pos) != 1:
+            return None, "press exige <tecla>"
+        req["key"] = pos[0]
+    elif op == "eval":
+        # O JS vem com espacos: volta a juntar o resto, como send/broadcast fazem.
+        # Um --panel ja foi consumido acima, entao sobra so o codigo.
+        if not pos:
+            return None, 'eval exige "<js>"'
+        req["js"] = " ".join(pos)
+    elif op == "open":
+        if pos:
+            req["url"] = pos[0]
+    elif op in ("close", "back", "forward", "reload", "page", "links"):
+        if pos:
+            return None, "%s nao aceita argumentos posicionais" % op
+    return req, None
+
+
+def build(argv):
+    """Traduz argv num request. Devolve (req, None) ou (None, msg de uso)."""
+    if not argv or argv[0] not in ("peers", "send", "broadcast", "panel"):
+        return None, USO
+    req = {"from": os.environ.get("TAYAMA_ID"), "cmd": argv[0]}
+    if argv[0] == "panel":
+        sub, err = painel(argv[1:])
+        if sub is None:
+            return None, err
+        # `from` tem que sobreviver: sem ele o Bridge responde "terminal de
+        # origem desconhecido" e NENHUM comando de painel funciona. O ramo do
+        # panel devolvia o dict de `painel()` direto, descartando o `req` que
+        # carrega o TAYAMA_ID.
+        return {"from": req["from"], **sub}, None
+    if argv[0] == "send":
+        if len(argv) < 3:
+            return None, 'uso: tayama send <nome-ou-cargo> "mensagem"'
+        req["target"], req["text"] = argv[1], " ".join(argv[2:])
+    elif argv[0] == "broadcast":
+        if len(argv) < 2:
+            return None, 'uso: tayama broadcast "mensagem"'
+        req["text"] = " ".join(argv[1:])
+    return req, None
+
+
+def formata(r):
+    """Texto para o agente. Sem chaves conhecidas, mostra o JSON inteiro —
+    melhor que um KeyError de traceback."""
+    if "panels" in r:
+        if not r["panels"]:
+            return "nenhum painel aberto"
+        linhas = []
+        for p in r["panels"]:
+            linhas.append("- %s  %s  [%s]%s" % (
+                p.get("id", "?"), p.get("url", "")[:60], p.get("state", "?"),
+                "  (ligado a voce)" if p.get("linked") else ""))
+        return "\n".join(linhas)
+    if "peers" in r:
+        return "\n".join(
+            "- %s (%s, %s)%s" % (p["name"], p["role"], p.get("agent", "?"),
+                                 "  [%s]" % p["kind"] if p.get("kind") == "painel" else "")
+            for p in r["peers"])
+    if "sent_to" in r:
+        return "enviado para: " + ", ".join(r["sent_to"])
+    if "value" in r:
+        return json.dumps(r["value"], ensure_ascii=False)
+    chaves = sorted(k for k in r if k not in ("ok", "error"))
+    if not chaves:
+        return "ok"
+    return json.dumps({k: r[k] for k in chaves}, ensure_ascii=False)
+
+
 def main():
     a = sys.argv[1:]
-    if not a or a[0] not in ("peers", "send", "broadcast"):
-        print(__doc__); return 2
-    req = {"from": os.environ.get("TAYAMA_ID"), "cmd": a[0]}
-    if a[0] == "send" and len(a) >= 3: req["target"], req["text"] = a[1], " ".join(a[2:])
-    elif a[0] == "broadcast" and len(a) >= 2: req["text"] = " ".join(a[1:])
-    elif a[0] != "peers": print(__doc__); return 2
+    req, uso = build(a)
+    if req is None:
+        print(uso, file=sys.stderr)
+        return 2
     try:
         s = socket.socket(socket.AF_UNIX); s.connect(os.environ["TAYAMA_SOCK"])
     except Exception as e:
-        print(f"Tayama indisponível: {e}"); return 1
+        print("Tayama indisponível: %s" % e); return 1
     s.sendall((json.dumps(req) + "\n").encode())
     buf = b""
     while chunk := s.recv(4096): buf += chunk
     r = json.loads(buf or b"{}")
     if r.get("ok"):
-        print("\n".join(f"- {p['name']} ({p['role']}, {p['agent']})" for p in r["peers"]) if "peers" in r
-              else "enviado para: " + ", ".join(r["sent_to"]))
+        print(formata(r))
         return 0
     print("erro:", r.get("error"))
-    for p in r.get("peers", []): print(f"- {p['name']} ({p['role']})")
+    for p in r.get("peers", []):
+        print("- %s (%s)" % (p["name"], p["role"]))
+    if r.get("panels") is not None:
+        for p in r["panels"]:
+            print("- %s  %s" % (p.get("id", "?"), p.get("url", "")[:60]))
     return 1
+
 
 sys.exit(main())
